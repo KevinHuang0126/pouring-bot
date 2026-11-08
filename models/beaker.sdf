@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<sdf version="1.7">
+  <model name="beaker">
+    <!-- Link origin is the bottom. Radius 0.04, height 0.09. -->
+    <link name="body">
+      <inertial>
+        <pose>0 0 0.045 0 0 0</pose>
+        <mass>0.12</mass>
+        <inertia>
+          <ixx>0.0002</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>0.0002</iyy><iyz>0</iyz>
+          <izz>0.0001</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <pose>0 0 0.045 0 0 0</pose>
+        <geometry>
+          <cylinder><radius>0.04</radius><length>0.09</length></cylinder>
+        </geometry>
+        <material><diffuse>0.65 0.90 0.98 0.55</diffuse></material>
+      </visual>
+      <collision name="collision">
+        <pose>0 0 0.045 0 0 0</pose>
+        <geometry>
+          <cylinder><radius>0.04</radius><length>0.09</length></cylinder>
+        </geometry>
+      </collision>
+    </link>
+  </model>
+</sdf>
