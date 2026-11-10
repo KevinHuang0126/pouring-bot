@@ -287,10 +287,10 @@ def main():
 
     # Force test tube while debugging the pickup.
     # Restore random selection later.
-    vessel_name = "test_tube"
+    # vessel_name = "test_tube"
 
     # To restore randomized vessel types:
-    # vessel_name = str(rng.choice(VESSELS))
+    vessel_name = str(rng.choice(VESSELS))
 
     source_x, source_y = choose_source_position(rng)
 
