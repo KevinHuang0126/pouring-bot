@@ -34,7 +34,7 @@ from grasp_planner import (
     solve_pregrasp_ik,
     solve_lift_ik,
 )
-
+from pour_planner import execute_pour
 
 RANDOM_SEED = None
 
@@ -215,7 +215,9 @@ def main():
     # To restore randomized vessel types:
     # vessel_name = str(rng.choice(VESSELS))
 
-    source_x, source_y = choose_source_position(rng)
+    #source_x, source_y = choose_source_position(rng)
+    source_x = 0.42
+    source_y = -0.16
 
     print("\nSelected vessel:", vessel_name)
     print(
@@ -596,13 +598,27 @@ def main():
                 print(
                     "Vessel rose substantially."
                 )
+
                 print(
-                    "Verify it is still held "
-                    "between the fingers."
+                    "Starting integrated pouring sequence..."
                 )
+
+                execute_pour(
+                    simulator=simulator,
+                    station=station,
+                    station_context=station_context,
+                    plant=plant,
+                    plant_context=plant_context,
+                    meshcat=meshcat,
+                    vessel_body=vessel_body,
+                    vessel_name=vessel_name,
+                )
+
             else:
+
                 print(
-                    "Pickup not confirmed."
+                    "Pickup not confirmed. "
+                    "Pouring skipped."
                 )
 
         else:
