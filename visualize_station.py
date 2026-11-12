@@ -24,6 +24,7 @@ from manipulation.station import (
 
 from pydrake.all import (
     DiagramBuilder,
+    JacobianWrtVariable,
     Meshcat,
     RigidTransform,
     Simulator,
@@ -32,9 +33,9 @@ from pydrake.all import (
 from grasp_planner import (
     GRASP_POINT_G,
     solve_pregrasp_ik,
-    solve_lift_ik,
 )
 from pour_planner import execute_pour
+
 
 RANDOM_SEED = None
 
@@ -72,8 +73,8 @@ APPROACH_DURATION = 5.0
 CLOSE_DURATION = 2.0
 
 LIFT_DISTANCE = 0.10
-LIFT_STEPS = 20
 LIFT_DURATION = 3.0
+LIFT_CONTROL_HZ = 50
 
 
 def scenario_text(
@@ -204,18 +205,97 @@ def command_joint_motion(
         )
 
 
+def command_cartesian_lift(
+    simulator,
+    station,
+    station_context,
+    plant,
+    plant_context,
+    iiwa,
+    gripper_frame,
+    p_WG_start,
+    start_time,
+):
+    """Lift in world Z using the gripper Jacobian and joint position input.
+
+    The desired task velocity is expressed in world coordinates and ordered
+    as angular velocity followed by translational velocity, matching Drake's
+    spatial Jacobian convention. A small position feedback term corrects
+    tracking error while following the smoothstep lift profile.
+    """
+
+    world = plant.world_frame()
+    first_joint = plant.GetJointByName("iiwa_joint_1")
+    last_joint = plant.GetJointByName("iiwa_joint_7")
+    arm_columns = slice(
+        first_joint.velocity_start(),
+        last_joint.velocity_start() + 1,
+    )
+
+    steps = int(LIFT_DURATION * LIFT_CONTROL_HZ)
+    dt = LIFT_DURATION / steps
+    qdot_limit = 1.0
+    linear_speed_limit = 0.15
+
+    for i in range(1, steps + 1):
+        s = (i - 0.5) / steps
+        alpha = smoothstep(s)
+        alpha_dot = 6.0 * s * (1.0 - s) / LIFT_DURATION
+
+        p_WG_desired = p_WG_start + np.array(
+            [0.0, 0.0, LIFT_DISTANCE * alpha]
+        )
+        X_WG_actual = plant.CalcRelativeTransform(
+            plant_context,
+            world,
+            gripper_frame,
+        )
+        position_error = p_WG_desired - X_WG_actual.translation()
+
+        v_WG_linear = (
+            np.array([0.0, 0.0, LIFT_DISTANCE * alpha_dot])
+            + 2.0 * position_error
+        )
+        speed = np.linalg.norm(v_WG_linear)
+        if speed > linear_speed_limit:
+            v_WG_linear *= linear_speed_limit / speed
+
+        # Drake's spatial velocity convention is [angular; translational].
+        V_WG = np.concatenate([np.zeros(3), v_WG_linear])
+        J_G = plant.CalcJacobianSpatialVelocity(
+            plant_context,
+            JacobianWrtVariable.kV,
+            gripper_frame,
+            [0.0, 0.0, 0.0],
+            world,
+            world,
+        )
+        qdot = np.linalg.pinv(J_G[:, arm_columns]) @ V_WG
+        qdot = np.clip(qdot, -qdot_limit, qdot_limit)
+
+        q_actual = plant.GetPositions(plant_context, iiwa).copy()
+        q_command = q_actual + dt * qdot
+        station.GetInputPort("iiwa.position").FixValue(
+            station_context,
+            q_command,
+        )
+        simulator.AdvanceTo(start_time + i * dt)
+
+
 def main():
 
     rng = np.random.default_rng(RANDOM_SEED)
 
     # Force test tube while debugging the pickup.
     # Restore random selection later.
-    vessel_name = "test_tube"
+    # vessel_name = "test_tube"
 
     # To restore randomized vessel types:
-    # vessel_name = str(rng.choice(VESSELS))
+    #vessel_name = str(rng.choice(VESSELS))
 
     #source_x, source_y = choose_source_position(rng)
+    vessel_name = "test_tube"
+
     source_x = 0.42
     source_y = -0.16
 
@@ -437,8 +517,6 @@ def main():
             GRASP_POINT_G
         )
 
-        R_lift = X_WG.rotation()
-
         print(
             "Actual grasp point:",
             np.round(grasp_point, 4),
@@ -458,174 +536,68 @@ def main():
         )
 
         # ------------------------------
-        # PHASE 3: PLAN INCREMENTAL LIFT
+        # PHASE 3: CARTESIAN LIFT
         # ------------------------------
-        print("\nPHASE 3: Planning lift...")
-        print("\nJoint limit margins:")
-        q_all = plant.GetPositions(plant_context)
-        lower = plant.GetPositionLowerLimits()
-        upper = plant.GetPositionUpperLimits()
+        print("\nPHASE 3: Lifting with the gripper Jacobian...")
+        command_cartesian_lift(
+            simulator=simulator,
+            station=station,
+            station_context=station_context,
+            plant=plant,
+            plant_context=plant_context,
+            iiwa=iiwa,
+            gripper_frame=gripper_frame,
+            p_WG_start=X_WG.translation().copy(),
+            start_time=close_end,
+        )
 
-        for joint_index in plant.GetJointIndices(iiwa):
-            joint = plant.get_joint(joint_index)
-            idx = joint.position_start()
+        # ------------------------------
+        # PHASE 4: EVALUATE PICKUP
+        # ------------------------------
+        vessel_xyz_after = (
+            plant.EvalBodyPoseInWorld(
+                plant_context,
+                vessel_body,
+            ).translation().copy()
+        )
 
-            print(
-                f"{joint.name()}: "
-                f"q={q_all[idx]:.4f}, "
-                f"lower margin={q_all[idx] - lower[idx]:.4f}, "
-                f"upper margin={upper[idx] - q_all[idx]:.4f}"
-            )
-        # The simulated robot and vessel stay unchanged
-        # throughout this planning phase.
-        seed_full = plant.GetPositions(
-            plant_context
-        ).copy()
+        height_change = (
+            vessel_xyz_after[2]
+            - vessel_xyz_before[2]
+        )
 
-        q_start = plant.GetPositions(
-            plant_context,
-            iiwa,
-        ).copy()
+        print("\nPICKUP RESULTS")
+        print(
+            "Before lift:",
+            np.round(vessel_xyz_before, 4),
+        )
+        print(
+            "After lift:",
+            np.round(vessel_xyz_after, 4),
+        )
+        print(
+            f"Vertical displacement: "
+            f"{height_change:.3f} m"
+        )
 
-        lift_waypoints = []
-        lift_feasible = True
+        if height_change > 0.06:
+            print("Vessel rose substantially.")
+            print("Starting integrated pouring sequence...")
 
-        for step in range(1, LIFT_STEPS + 1):
-
-            dz = (
-                step
-                * LIFT_DISTANCE
-                / LIFT_STEPS
-            )
-
-            lift_target = (
-                grasp_point
-                + np.array([0.0, 0.0, dz])
-            )
-
-            q_next, next_seed = solve_lift_ik(
+            execute_pour(
+                simulator=simulator,
+                station=station,
+                station_context=station_context,
                 plant=plant,
                 plant_context=plant_context,
-                target_position=lift_target,
-                R_target=R_lift,
-                seed_positions=seed_full,
+                meshcat=meshcat,
+                vessel_body=vessel_body,
+                vessel_name=vessel_name,
             )
-
-            if q_next is None:
-                print(
-                    f"Lift IK failed at step "
-                    f"{step}/{LIFT_STEPS}."
-                )
-                lift_feasible = False
-                break
-
-            lift_waypoints.append(q_next.copy())
-
-            # Use the previous solution to initialize
-            # the next IK solve, without changing
-            # the real simulation state.
-            seed_full = next_seed.copy()
-
-            if step % 5 == 0:
-                print(
-                    f"Planned lift: "
-                    f"{dz * 100:.1f} cm"
-                )
-
-        # ------------------------------
-        # PHASE 4: EXECUTE LIFT
-        # ------------------------------
-        if lift_feasible:
-
-            print(
-                "\nAll lift IK targets succeeded!"
-            )
-            print("\nPHASE 4: Lifting vessel...")
-
-            current_time = close_end
-            q_previous = q_start.copy()
-
-            segment_duration = (
-                LIFT_DURATION / LIFT_STEPS
-            )
-
-            for q_next in lift_waypoints:
-
-                command_joint_motion(
-                    simulator=simulator,
-                    station=station,
-                    station_context=station_context,
-                    q_start=q_previous,
-                    q_goal=q_next,
-                    start_time=current_time,
-                    duration=segment_duration,
-                    steps=5,
-                )
-
-                current_time += segment_duration
-                q_previous = q_next.copy()
-
-            # ------------------------------
-            # PHASE 5: EVALUATE PICKUP
-            # ------------------------------
-            vessel_xyz_after = (
-                plant.EvalBodyPoseInWorld(
-                    plant_context,
-                    vessel_body,
-                ).translation().copy()
-            )
-
-            height_change = (
-                vessel_xyz_after[2]
-                - vessel_xyz_before[2]
-            )
-
-            print("\nPICKUP RESULTS")
-            print(
-                "Before lift:",
-                np.round(vessel_xyz_before, 4),
-            )
-            print(
-                "After lift:",
-                np.round(vessel_xyz_after, 4),
-            )
-            print(
-                f"Vertical displacement: "
-                f"{height_change:.3f} m"
-            )
-
-            if height_change > 0.06:
-                print(
-                    "Vessel rose substantially."
-                )
-
-                print(
-                    "Starting integrated pouring sequence..."
-                )
-
-                execute_pour(
-                    simulator=simulator,
-                    station=station,
-                    station_context=station_context,
-                    plant=plant,
-                    plant_context=plant_context,
-                    meshcat=meshcat,
-                    vessel_body=vessel_body,
-                    vessel_name=vessel_name,
-                )
-
-            else:
-
-                print(
-                    "Pickup not confirmed. "
-                    "Pouring skipped."
-                )
 
         else:
-            print(
-                "\nLift skipped because IK "
-                "planning failed."
-            )
+            print("Pickup not confirmed.")
+            print("Pouring skipped.")
 
     diagram.ForcedPublish(context)
 
