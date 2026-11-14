@@ -1,4 +1,3 @@
-
 """KUKA iiwa camera-guided grasping and pouring workstation.
 
 Complete pipeline:
@@ -51,14 +50,14 @@ from perception import (
 
 # Set to None for a different scenario every run.
 # Set to an integer to reproduce a scenario.
-RANDOM_SEED = 252190880282444974816335130055296677874
+RANDOM_SEED = None
 
 # Start with a fixed test tube while debugging
 # camera localization.
 RANDOMIZE_POSITION = True
 RANDOMIZE_VESSEL = True
 
-FIXED_VESSEL = "erlenmeyer"
+FIXED_VESSEL = "test_tube"
 
 FIXED_SOURCE_X = 0.42
 FIXED_SOURCE_Y = -0.16
@@ -68,9 +67,6 @@ SOURCE_X_RANGE = (0.35, 0.60)
 SOURCE_Y_RANGE = (-0.23, 0.10)
 
 MIN_BEAKER_CLEARANCE = 0.20
-
-USE_CAMERA_LOCALIZATION = True
-PERCEPTION_ONLY = False
 
 # ==================================================
 # PERCEPTION SETTINGS
@@ -119,9 +115,7 @@ VESSELS = (
 
 # Known grasp heights for each geometry.
 #
-# These use the lower flask grasp positions
-# discussed previously to reduce the moment arm
-# between the grasp and the center of mass.
+# Preserve the current user-selected grasp heights.
 
 GRASP_HEIGHTS = {
     "test_tube": 0.07,
