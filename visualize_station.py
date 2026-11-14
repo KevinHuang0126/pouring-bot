@@ -55,7 +55,7 @@ RANDOM_SEED = 42
 
 # Start with a fixed test tube while debugging
 # camera localization.
-RANDOMIZE_POSITION = False
+RANDOMIZE_POSITION = True
 RANDOMIZE_VESSEL = False
 
 FIXED_VESSEL = "test_tube"
