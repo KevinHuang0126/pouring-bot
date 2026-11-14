@@ -51,14 +51,14 @@ from perception import (
 
 # Set to None for a different scenario every run.
 # Set to an integer to reproduce a scenario.
-RANDOM_SEED = 42
+RANDOM_SEED = 252190880282444974816335130055296677874
 
 # Start with a fixed test tube while debugging
 # camera localization.
 RANDOMIZE_POSITION = True
-RANDOMIZE_VESSEL = False
+RANDOMIZE_VESSEL = True
 
-FIXED_VESSEL = "test_tube"
+FIXED_VESSEL = "erlenmeyer"
 
 FIXED_SOURCE_X = 0.42
 FIXED_SOURCE_Y = -0.16
@@ -125,8 +125,8 @@ VESSELS = (
 
 GRASP_HEIGHTS = {
     "test_tube": 0.07,
-    "erlenmeyer": 0.10,
-    "boiling_flask": 0.11,
+    "erlenmeyer": 0.11,
+    "boiling_flask": 0.15,
 }
 
 
