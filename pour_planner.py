@@ -81,9 +81,9 @@ VESSEL_TILT_ANGLES = {
 # Larger vessels are tilted more slowly to
 # reduce the likelihood of slipping.
 VESSEL_TILT_DURATIONS = {
-    "test_tube": 8.0,
-    "erlenmeyer": 10.0,
-    "boiling_flask": 10.0,
+    "test_tube": 12.0,
+    "erlenmeyer": 15.0,
+    "boiling_flask": 15.0,
 }
 
 
@@ -99,7 +99,7 @@ RETURN_DURATION = 8.0
 
 CONTROL_DT = 0.02
 
-SETTLE_DURATION = 2.0
+SETTLE_DURATION = 4.0
 
 
 # ==================================================
