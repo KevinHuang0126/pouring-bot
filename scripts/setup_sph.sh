@@ -36,6 +36,10 @@ if [[ "$(git -C "$source_dir" rev-parse --verify HEAD 2>/dev/null || true)" != "
     git -C "$source_dir" fetch --depth=1 "$upstream" "$revision"
     git -C "$source_dir" checkout --detach FETCH_HEAD
 fi
+patch="$root/patches/splishsplash-dfsph-timestep.patch"
+if ! git -C "$source_dir" apply --reverse --check "$patch" 2>/dev/null; then
+    git -C "$source_dir" apply "$patch"
+fi
 build_dir="$source_dir/build"
 cmake -S "$source_dir" -B "$build_dir" \
     -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.10 \

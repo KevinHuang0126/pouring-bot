@@ -38,9 +38,9 @@
         {
             "id": "Fluid",
             "density0": 1000,
-            "viscosityMethod": 1,
+            "viscosityMethod": 6,
             "colorMapType": 1,
-            "Standard viscosity": {
+            "Weiler et al. 2018": {
                 "viscosity": 0.01
             }
         }

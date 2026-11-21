@@ -1,0 +1,26 @@
+diff --git a/SPlisHSPlasH/DFSPH/TimeStepDFSPH.cpp b/SPlisHSPlasH/DFSPH/TimeStepDFSPH.cpp
+--- a/SPlisHSPlasH/DFSPH/TimeStepDFSPH.cpp
++++ b/SPlisHSPlasH/DFSPH/TimeStepDFSPH.cpp
+@@ -181,11 +181,6 @@ void TimeStepDFSPH::step()
+ 	//////////////////////////////////////////////////////////////////////////
+ 	sim->computeNonPressureForces();
+ 
+-	//////////////////////////////////////////////////////////////////////////
+-	// Update the time step size, e.g. by using a CFL condition
+-	//////////////////////////////////////////////////////////////////////////
+-	sim->updateTimeStepSize();
+-
+ 	//////////////////////////////////////////////////////////////////////////
+ 	// compute new velocities only considering non-pressure forces
+ 	//////////////////////////////////////////////////////////////////////////
+@@ -246,6 +241,10 @@ void TimeStepDFSPH::step()
+ 	// Compute new time
+ 	//////////////////////////////////////////////////////////////////////////
+ 	tm->setTime (tm->getTime () + h);
++
++	// Select the next step from the completed state. Both pressure solves,
++	// nonpressure integration and position integration must use the same h.
++	sim->updateTimeStepSize();
+ }
+ 
+ 

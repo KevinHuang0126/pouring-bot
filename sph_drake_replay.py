@@ -97,10 +97,10 @@ class DrakeReplay:
 
         return linear, angular
 
-    def apply(self, boundary, t):
+    def apply(self, boundary, t, *, stationary=False):
         body = boundary.getRigidBodyObject()
         p, R = self.pose(t)
-        v, omega = self.velocity(t)
+        v, omega = (np.zeros(3), np.zeros(3)) if stationary else self.velocity(t)
 
         # The binding uses Eigen quaternion coefficient order (x, y, z, w).
         body.setPosition(p)
@@ -130,8 +130,14 @@ def prepare_animated_scene(static_scene, output_scene):
         json.dump(scene, f, indent=2)
 
 
-def replay_scene(scene_path, replay, duration, output, *, on_step=None):
-    """Run a replay and return final time, last step start, and fluid centers."""
+def replay_scene(scene_path, replay, duration, output, *, settle_duration=0.0, on_step=None):
+    """Return solver time, last applied trajectory time, and all fluid centers.
+
+    The optional step callback receives the simulation and the start and
+    end times on the solver clock, including any settling time.
+    """
+    if not np.isfinite(settle_duration) or settle_duration < 0:
+        raise ValueError("Settling duration must be finite and nonnegative")
     simulator = sph.Exec.SimulatorBase()
     simulator.init(
         sceneFile=str(scene_path), outputDir=str(output),
@@ -171,7 +177,8 @@ def replay_scene(scene_path, replay, duration, output, *, on_step=None):
         offsets = np.asarray(body.getVertices()) - body.getPosition()
         source.setMaxDist(np.linalg.norm(offsets, axis=1).max())
 
-        pose_time = tm.getTime()
+        trajectory_start = None if settle_duration else initial_time
+        pose_time = 0.0
         step_count = 0
         fluid_frames = []
         output = Path(output)
@@ -180,16 +187,27 @@ def replay_scene(scene_path, replay, duration, output, *, on_step=None):
             path.name: path.stat().st_mtime_ns
             for path in vtk_output.glob("ParticleData_Fluid_*.vtk")
         }
-        print("Starting Drake-driven SPH replay", flush=True)
-        while tm.getTime() < duration:
-            pose_time = tm.getTime()
-            replay.apply(source, pose_time)
+        if settle_duration:
+            print(f"Settling fluid for {settle_duration:g} s with the source fixed", flush=True)
+        else:
+            print("Starting Drake-driven SPH replay", flush=True)
+        while True:
+            step_start = tm.getTime()
+            if trajectory_start is None and step_start - initial_time >= settle_duration:
+                trajectory_start = step_start
+                print(f"Starting Drake replay at solver t={step_start:.6f} s", flush=True)
+            settling = trajectory_start is None
+            trajectory_time = 0.0 if settling else step_start - trajectory_start
+            if not settling and trajectory_time >= duration:
+                break
+            pose_time = trajectory_time
+            replay.apply(source, pose_time, stationary=settling)
             # The solver samples the maps at the updated pose and uses the
             # rigid body's point velocities. step() alone only exports frames.
             if not simulator.timeStepNoGUI():
                 raise RuntimeError("SPH stopped before the requested duration")
             current_time = tm.getTime()
-            if not np.isfinite(current_time) or current_time <= pose_time:
+            if not np.isfinite(current_time) or current_time <= step_start:
                 raise RuntimeError("SPH simulation time stopped advancing")
             step_count += 1
             # VTK has no timestamp. Record the step that produced each frame
@@ -200,7 +218,7 @@ def replay_scene(scene_path, replay, duration, output, *, on_step=None):
                     and vtk_path.stat().st_mtime_ns != previous_frames.get(vtk_path.name)):
                 fluid_frames.append((frame, current_time, pose_time))
             if on_step is not None:
-                on_step(simulation, pose_time, current_time)
+                on_step(simulation, step_start, current_time)
             if step_count % 100 == 0:
                 print(f"t={tm.getTime():.3f} s steps={step_count}", flush=True)
 
@@ -240,10 +258,14 @@ def main():
         "--output",
         default="sph_pouring_trial/animated_output",
     )
+    parser.add_argument("--settle-duration", type=float, default=0.0, metavar="SECONDS")
     args = parser.parse_args()
 
     if not np.isfinite(args.duration) or args.duration <= 0:
         parser.error("--duration must be positive and finite")
+
+    if not np.isfinite(args.settle_duration) or args.settle_duration < 0:
+        parser.error("--settle-duration must be finite and nonnegative")
 
     scene_path = Path(args.scene).resolve()
     replay = DrakeReplay(args.trajectory)
@@ -252,7 +274,10 @@ def main():
         dir=scene_path.parent, prefix="scene_animated_", suffix=".json"
     ) as animated_scene:
         prepare_animated_scene(scene_path, animated_scene.name)
-        replay_scene(animated_scene.name, replay, args.duration, Path(args.output).resolve())
+        replay_scene(
+            animated_scene.name, replay, args.duration, Path(args.output).resolve(),
+            settle_duration=args.settle_duration,
+        )
 
 
 if __name__ == "__main__":

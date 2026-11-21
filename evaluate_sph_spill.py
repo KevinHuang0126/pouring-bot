@@ -74,6 +74,7 @@ def evaluate(
     duration: float | None = None,
     *,
     hold_source: bool = False,
+    settle_duration: float = 0.0,
     config: PouringConfig = DEFAULT_CONFIG,
 ) -> dict:
     """Replay a CSV or an in-memory Drake recorder and return the JSON report.
@@ -81,8 +82,13 @@ def evaluate(
     Each run owns its output and scene. Pass the same scene_dir to reuse
     volume maps across serial runs. When output is omitted, a fresh temporary
     directory is created and its path is returned in the report.
+    settle_duration holds the source fixed before the requested replay duration.
     """
     from sph_drake_replay import DrakeReplay, prepare_animated_scene, replay_scene
+
+    settle_duration = float(settle_duration)
+    if not np.isfinite(settle_duration) or settle_duration < 0:
+        raise ValueError("Settling duration must be finite and nonnegative")
 
     output = Path(mkdtemp(prefix="sph-evaluation-")) if output is None else Path(output).resolve()
     if output.exists() and (not output.is_dir() or any(output.iterdir())):
@@ -112,7 +118,9 @@ def evaluate(
 
     # The native simulator owns process-global state.
     with _REPLAY_LOCK:
-        time, pose_time, positions = replay_scene(animated_scene, replay, duration, output)
+        time, pose_time, positions = replay_scene(
+            animated_scene, replay, duration, output, settle_duration=settle_duration,
+        )
 
     origin, rotation = replay.pose(pose_time)
     report = {
@@ -121,6 +129,7 @@ def evaluate(
         "spill_measurement_validated": False,
         "output_dir": str(output),
         "requested_duration_s": duration,
+        "requested_settle_duration_s": settle_duration,
         "simulation_time_s": time,
         "source_held_fixed": hold_source,
         "applied_source_pose_time_s": 0.0 if hold_source else pose_time,
@@ -143,6 +152,10 @@ def main():
         default=DEFAULT_TEMPLATE,
     )
     parser.add_argument("--duration", type=float, help="Default is the trajectory end time")
+    parser.add_argument(
+        "--settle-duration", type=float, default=0.0, metavar="SECONDS",
+        help="Hold the source fixed before replaying the full requested duration",
+    )
     parser.add_argument("--hold-source", action="store_true", help="Run a fixed-vessel control")
     parser.add_argument("--config", type=Path, help="JSON cup and fill overrides")
     args = parser.parse_args()
@@ -152,7 +165,7 @@ def main():
         )
         report = evaluate(
             args.trajectory, args.output, args.scene_dir, args.template, args.duration,
-            hold_source=args.hold_source, config=config,
+            hold_source=args.hold_source, settle_duration=args.settle_duration, config=config,
         )
     except (ValueError, TypeError, OSError) as exc:
         parser.error(str(exc))

@@ -17,7 +17,7 @@ sudo apt-get install -y git build-essential cmake pkg-config python3-dev python3
 bash scripts/setup_sph.sh
 ```
 
-Setup needs network access to GitHub and PyPI. The first setup builds SPlisHSPlasH from source. Set `PYTHON` to select a compatible interpreter or `BUILD_JOBS` to control compile parallelism. Drake downloads its pinned public robot models on first use.
+Setup needs network access to GitHub and PyPI. The first setup builds SPlisHSPlasH from source and applies the repository’s DFSPH timestep patch. Rerun the setup script to update an existing demo environment. Set `PYTHON` to select a compatible interpreter or `BUILD_JOBS` to control compile parallelism. Drake downloads its pinned public robot models on first use.
 
 ### Run and view the demo
 
@@ -64,7 +64,7 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) for the complete Git workflow and copyab
 
 ## Evaluator reference
 
-The reference environment used Python 3.14.4 and a Release build of SPlisHSPlasH 2.19.1 at commit `dba6b26b9387ab6bdd187d6df0a7c9d490d03500`, with single precision and CompactNSearch. If you already have compatible bindings, make them importable in your Python environment in place of running the setup script.
+The reference environment used Python 3.14.4 and a Release build of SPlisHSPlasH 2.19.1 at commit `dba6b26b9387ab6bdd187d6df0a7c9d490d03500`, with single precision and CompactNSearch. If you build the bindings yourself, apply `patches/splishsplash-dfsph-timestep.patch` to the pinned source before compiling. Use the setup script for the tested build configuration.
 
 The checked-in CSV runs for 3 seconds. Use `--duration 0.03` for a quick run or `--hold-source` for a fixed-vessel control. Each run keeps its own scene, VTK frames, log, and `spill_report.json`. Use a new or empty output directory for each run. Reuse `--scene-dir` to share volume maps across serial runs with the same SPlisHSPlasH build. Use separate cache directories for parallel processes. The first run for a cup shape builds its map. Without `--scene-dir`, the maps live with the run's scene.
 
@@ -97,13 +97,36 @@ Cup dimensions are inner radius, wall thickness, total height, and base thicknes
 
 **Interpret the report.** The three counts `in_source`, `in_receiver`, and `outside_both` partition the final particle centers using the generated cups' faceted interiors and the source pose actually applied on the last step. The fractions are normalized by the final particle count. `outside_fraction` is a provisional spill proxy and includes any fluid still in flight or inside a solid. `below_world_z_zero` is a separate diagnostic. The replay is one-way, with prescribed vessel motion and no table or ground contact. Use the counts for motion comparisons under identical settings. `spill_measurement_validated: false` indicates that quantitative spill accuracy remains unverified, so treat these outputs as provisional metrics for optimization and training.
 
+### Optional stationary settling
+
+Add `--settle-duration 0.2` to the evaluation command or pass `settle_duration=0.2` to `evaluate()`. The source stays at its first pose with zero linear and angular velocity during settling. The full requested replay begins at Drake t=0 on the next solver step. The solver clock and VTK output include the settling phase. Settling is off by default, and all particles carry through to the final report. With the original solver settings, a short fixed-source comparison ejected one particle with and without settling. Use the phase to separate startup from trajectory motion.
+
 ### Containment investigation
 
 Both generated cups have 258 vertices and 512 nondegenerate triangles. Every edge is paired in opposite directions and both meshes have positive signed solid volume. The bases are 4 mm thick and the source and receiver walls are 3 mm and 4 mm thick, respectively. Probes of the Bender2019 distance field were positive in the cup cavities and outside the solids, and negative inside the base and wall at the sampled points. DFSPH samples each map in the body's local frame and uses positive nearby boundary volumes for pressure and divergence. The 1.3-second moving run showed up to 239 active center contributions from the source map and 42 from the receiver map. The penetration fallback moves a center slowly along the distance gradient and clears its velocity. It evaluates particle positions at discrete steps, so the collision model can still miss crossings.
 
 In per-step particle-ID traces, every particle that ended below world Z zero first cleared the source opening, including all escaped particles in the fixed-vessel control. The initial particles were inside the source. The fixed trace had abrupt speed increases during early settling, followed by rim exits between about 0.14 and 0.18 s. One particle jumped from 2.39 to 8.89 m/s in a single step inside the cavity. The timing and speed jumps point to a startup fluid-solver transient. The force term responsible for the jumps remains unresolved. With no ground boundary, particles that miss the receiver continue to fall. The tracked paths explain the escapes through the open rim, and the fixed control shows they can occur independently of commanded motion. Cup geometry and simulation parameters were kept fixed.
 
-The single-threaded 3-second reference runs produced these final geometric counts. Multithreaded diagnostic runs produced different exact tallies.
+### Startup ejection diagnostic
+
+The fill starts at rest on a 6 mm lattice. The nearest centers are 12.36 mm from the source wall and 14.00 mm above its bottom. The first computed densities are 607–999.97 kg/m³ against a rest density of 1,000 kg/m³. The first three steps match gravity alone. The startup issue develops after the fill reaches the cup boundary.
+
+In the original fixed-source run, particle 175 had a 12.01 m/s velocity change in the step ending at 0.18452 s. Nonpressure acceleration accounted for 12.00 m/s, with zero density-pressure impulse and about 0.008 m/s remaining. Explicit viscosity was the only other nonpressure force besides gravity. In the next step, the particle was 3.85 mm from the inner wall. The Bender2019 density term `rho0 * V * W` contributed about 1,511 of the 2,026 kg/m³, with the sampled normal pointing into the cavity and the vessel velocity zero. That step included an 8.63 m/s density-pressure contribution, 0.20 m/s from nonpressure acceleration, and a 3.30 m/s residual attributed to divergence correction. These are magnitudes of vectors and do not add algebraically. Particle 129 was the one that crossed the rim at 0.221 s. Its largest prior velocity change was also dominated by explicit viscosity while clear of the boundary. The volume-map density term follows the published method. [Bender et al., Volume Maps](https://animation.rwth-aachen.de/media/papers/65/2019-MIG-VolumeMaps.pdf)
+
+**Implementation fix.** The pinned DFSPH code replaced the current timestep before the density-pressure solve but still advanced positions and time with the original step. At the 0.18452 s event, the step advanced by 1.275 ms while the pressure solve used 0.237 ms. The setup patch computes the next CFL timestep after the current integration so both pressure solves and the update use one timestep. This corrects the inconsistency. The fixed-source run still ejected particles with the original explicit viscosity.
+
+**Stabilization.** The demo now uses Weiler’s implicit viscosity at the same kinematic coefficient of 0.01 m²/s. The short control showed no ejections and much smaller velocities. Lowering the explicit coefficient to a water-scale 10⁻⁶ m²/s also reduced velocities but still ejected particles, so that variant was not adopted. The implicit default retains a local density spike and has only been checked for this startup window. The settings do not establish quantitatively accurate water behavior.
+
+| Fixed source, first 0.25 s, one thread | Peak density (kg/m³) | Peak speed (m/s) | Distinct uphill rim crossings | Final source / receiver / outside | Total |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Original build and explicit viscosity | 2,176 | 10.14 | 1 | 359 / 0 / 1 | 360 |
+| Timestep fix and original explicit viscosity | 1,679 | 12.34 | 9 | 351 / 0 / 9 | 360 |
+| Timestep fix and water-scale explicit viscosity | 2,013 | 1.69 | 7 | 353 / 0 / 7 | 360 |
+| Timestep fix and implicit viscosity (current demo) | 1,607 | 0.57 | 0 | 360 / 0 / 0 | 360 |
+
+Repeat the current control using the Quick Start evaluation command with `--hold-source --duration 0.25` and a fresh output directory.
+
+Before the startup changes, the single-threaded 3-second reference runs produced these final geometric counts. Multithreaded diagnostic runs produced different exact tallies.
 
 | Run | Source | Receiver | Outside both | Below world Z zero |
 | --- | ---: | ---: | ---: | ---: |
