@@ -854,7 +854,7 @@ def main():
     )
 
     simulator.set_target_realtime_rate(
-        1.0
+        0.0
     )
 
     simulator.Initialize()
@@ -875,6 +875,7 @@ def main():
     )
 
     pickup_success = False
+    upright_ok = False
     pour_success = False
 
     # ----------------------------------------------
@@ -1032,6 +1033,16 @@ def main():
             ).translation().copy()
         )
 
+        closure_horizontal_displacement = np.linalg.norm(
+            vessel_xyz_before[:2]
+            - np.array([source_x, source_y])
+        )
+
+        print(
+            f"Closure horizontal displacement: "
+            f"{closure_horizontal_displacement:.4f} m"
+        )
+
         print(
             "Vessel position before lift:",
             np.round(
@@ -1130,9 +1141,43 @@ def main():
         # PHASE 5: START INTEGRATED POUR
         # ==========================================
 
-        if height_change > 0.06:
+        # ==========================================
+        # UPRIGHT GRASP VALIDATION
+        # ==========================================
 
-            pickup_success = True
+        X_WV_after_lift = plant.EvalBodyPoseInWorld(
+            plant_context,
+            vessel_body,
+        )
+
+        vessel_axis_W = (
+            X_WV_after_lift.rotation().matrix()[:, 2]
+        )
+
+        pickup_tilt_deg = np.degrees(
+            np.arccos(
+                np.clip(vessel_axis_W[2], -1.0, 1.0)
+            )
+        )
+
+        max_pickup_tilt_deg = 15.0
+        upright_ok = pickup_tilt_deg <= max_pickup_tilt_deg
+
+        print(
+            f"Pickup tilt: {pickup_tilt_deg:.2f} degrees"
+        )
+        print("Upright grasp:", upright_ok)
+
+        # A vessel can be lifted successfully but crooked.
+        pickup_success = height_change > 0.06
+
+        if pickup_success and not upright_ok:
+            print(
+                "UNSTABLE PICKUP: Vessel lifted but "
+                "exceeded upright tilt tolerance."
+            )
+
+        if pickup_success and upright_ok:
 
             print(
                 "Vessel rose substantially."
@@ -1195,6 +1240,21 @@ def main():
             print(
                 "Pouring skipped."
             )
+
+    # ==============================================
+    # ML GRASP OUTCOME
+    # ==============================================
+
+    if not pickup_success:
+        grasp_outcome = "pickup_failure"
+    elif not upright_ok:
+        grasp_outcome = "unstable_pickup"
+    elif pour_success:
+        grasp_outcome = "success"
+    else:
+        grasp_outcome = "pour_failure"
+
+    print("Grasp outcome:", grasp_outcome)
 
     # ==============================================
     # FINAL SUMMARY
