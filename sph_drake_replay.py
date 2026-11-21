@@ -173,6 +173,13 @@ def replay_scene(scene_path, replay, duration, output, *, on_step=None):
 
         pose_time = tm.getTime()
         step_count = 0
+        fluid_frames = []
+        output = Path(output)
+        vtk_output = output / "vtk"
+        previous_frames = {
+            path.name: path.stat().st_mtime_ns
+            for path in vtk_output.glob("ParticleData_Fluid_*.vtk")
+        }
         print("Starting Drake-driven SPH replay", flush=True)
         while tm.getTime() < duration:
             pose_time = tm.getTime()
@@ -185,10 +192,23 @@ def replay_scene(scene_path, replay, duration, output, *, on_step=None):
             if not np.isfinite(current_time) or current_time <= pose_time:
                 raise RuntimeError("SPH simulation time stopped advancing")
             step_count += 1
+            # VTK has no timestamp. Record the step that produced each frame
+            # and the vessel pose sampled by that step.
+            frame = len(fluid_frames) + 1
+            vtk_path = vtk_output / f"ParticleData_Fluid_{frame}.vtk"
+            if (vtk_path.is_file()
+                    and vtk_path.stat().st_mtime_ns != previous_frames.get(vtk_path.name)):
+                fluid_frames.append((frame, current_time, pose_time))
             if on_step is not None:
                 on_step(simulation, pose_time, current_time)
             if step_count % 100 == 0:
                 print(f"t={tm.getTime():.3f} s steps={step_count}", flush=True)
+
+        if fluid_frames:
+            with (output / "fluid_frames.csv").open("w", newline="") as stream:
+                writer = csv.writer(stream)
+                writer.writerow(("frame", "time_s", "source_pose_time_s"))
+                writer.writerows(fluid_frames)
 
         print(f"Replay completed at t={tm.getTime():.3f} s after {step_count} steps")
         print(f"Output directory {output}")
