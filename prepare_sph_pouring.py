@@ -1,7 +1,6 @@
 """Generate a real SPH pouring scene and hollow OBJ boundaries from Drake dimensions.
 
-This prepares geometry and a static initial scene. Moving-boundary replay is NOT
-implemented by this script; do not treat its output as a coupled simulation.
+The generated Bender2019 scene is the initial state for sph_drake_replay.py.
 """
 import argparse
 import csv
@@ -67,6 +66,7 @@ def main():
     template = json.loads(Path(args.template).read_text())
     config = template['Configuration']
     config.update({'particleRadius': 0.003, 'gravitation': [0,0,-9.81],
+                   'boundaryHandlingMethod': 2,  # Bender2019 volume maps
                    'enableVTKExport': True, 'dataExportFPS': 30.0,
                    'particleAttributes': 'velocity;density'})
     first = source[0]
@@ -93,7 +93,7 @@ def main():
         'status':'PREPARATION_ONLY_NO_MOVING_BOUNDARY_REPLAY',
         'note':'Static scene is a geometry/fluid smoke test, not a pouring result.'},indent=2)+'\n')
     print('Prepared',output)
-    print('Static smoke test only: source is not yet animated by Drake CSV.')
+    print('Replay vessel motion with sph_drake_replay.py.')
 
 if __name__ == '__main__':
     main()

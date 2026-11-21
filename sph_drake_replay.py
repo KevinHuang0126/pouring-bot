@@ -7,13 +7,13 @@ Requires:
     drake_vessel_trajectory.csv
     sph_pouring_trial/scene_static.json
 
-This is an integration prototype, not yet validated fluid physics.
+The Drake trajectory prescribes the source vessel pose and velocity.
 """
 
 import argparse
 import csv
 import json
-import sys
+from tempfile import NamedTemporaryFile
 from pathlib import Path
 
 import numpy as np
@@ -61,7 +61,6 @@ class DrakeReplay:
         self.times, self.positions, self.rotations = (
             load_trajectory(trajectory)
         )
-        self.previous_time = None
 
     def pose(self, t):
         t = float(np.clip(t, self.times[0], self.times[-1]))
@@ -75,6 +74,9 @@ class DrakeReplay:
         return p, R
 
     def velocity(self, t):
+        if t < self.times[0] or t > self.times[-1]:
+            return np.zeros(3), np.zeros(3)
+
         eps = 1e-4
         t0 = max(self.times[0], t - eps)
         t1 = min(self.times[-1], t + eps)
@@ -92,20 +94,21 @@ class DrakeReplay:
 
         return linear, angular
 
-    def apply(self, rigid_body, t):
+    def apply(self, boundary, t):
+        body = boundary.getRigidBodyObject()
         p, R = self.pose(t)
         v, omega = self.velocity(t)
 
-        # SPlisHSPlasH expects a float32 quaternion [x, y, z, w].
-        q = Rotation.from_matrix(R).as_quat().astype(np.float32)
+        # The binding uses Eigen quaternion coefficient order (x, y, z, w).
+        body.setPosition(p)
+        body.setRotation(Rotation.from_matrix(R).as_quat())
+        body.setVelocity(v)
+        body.setAngularVelocity(omega)
+        body.updateMeshTransformation()
 
-        rigid_body.setPosition(np.asarray(p, dtype=np.float32))
-        rigid_body.setRotation(q)
-        rigid_body.setVelocity(np.asarray(v, dtype=np.float32))
-        rigid_body.setAngularVelocity(
-            np.asarray(omega, dtype=np.float32)
-        )
-        rigid_body.updateMeshTransformation()
+        # CFL takes the square root of the maximum velocity accumulator.
+        speed_bound = np.linalg.norm(v) + boundary.getMaxDist() * np.linalg.norm(omega)
+        boundary.setMaxVel(speed_bound ** 2)
 
 
 def prepare_animated_scene(static_scene, output_scene):
@@ -114,22 +117,72 @@ def prepare_animated_scene(static_scene, output_scene):
 
     bodies = scene.get("RigidBodies", [])
 
-    if len(bodies) < 2:
-        raise ValueError(
-            "Expected source and receiver rigid bodies"
-        )
+    if len(bodies) != 2:
+        raise ValueError("Expected two scene bodies in source, receiver order")
 
-    # Generated scene order: source, receiver.
-    bodies[0]["isDynamic"] = False
-    bodies[0]["isAnimated"] = True
-
-    bodies[1]["isDynamic"] = False
-    bodies[1]["isAnimated"] = False
+    bodies[0].update(isDynamic=False, isAnimated=True)
+    bodies[1].update(isDynamic=False, isAnimated=False)
 
     with open(output_scene, "w") as f:
         json.dump(scene, f, indent=2)
 
-    return output_scene
+
+def replay_scene(scene_path, replay, duration, output):
+    simulator = sph.Exec.SimulatorBase()
+    simulator.init(
+        sceneFile=str(scene_path), outputDir=str(output),
+        useGui=False, initialPause=False,
+    )
+    simulator.initSimulation()
+
+    try:
+        simulation = sph.Simulation.getCurrent()
+        if simulation.getBoundaryHandlingMethod() != sph.BoundaryHandlingMethods.Bender2019:
+            raise ValueError("Replay requires Bender2019 volume-map boundaries")
+
+        boundary_simulator = simulator.getBoundarySimulator()
+        if not isinstance(boundary_simulator, sph.Exec.StaticBoundarySimulator):
+            raise RuntimeError("Replay requires a StaticBoundarySimulator")
+
+        # The binding exposes deferred initialization through runSimulation().
+        # Start past a temporary stop time so it initializes without stepping.
+        tm = sph.TimeManager.getCurrent()
+        initial_time = tm.getTime()
+        simulator.setValueFloat(simulator.STOP_AT, 1.0)
+        tm.setTime(2.0)
+        simulator.runSimulation()
+        tm.setTime(initial_time)
+        simulator.setValueFloat(simulator.STOP_AT, -1.0)
+
+        boundaries = [
+            simulation.getBoundaryModel(i)
+            for i in range(simulation.numberOfBoundaryModels())
+        ]
+        sources = [bm for bm in boundaries if bm.getRigidBodyObject().isAnimated()]
+        if len(boundaries) != 2 or len(sources) != 1:
+            raise RuntimeError("Expected an animated source and a static receiver")
+
+        source = sources[0]
+        body = source.getRigidBodyObject()
+        offsets = np.asarray(body.getVertices()) - body.getPosition()
+        source.setMaxDist(np.linalg.norm(offsets, axis=1).max())
+
+        step_count = 0
+        print("Starting Drake-driven SPH replay", flush=True)
+        while tm.getTime() < duration:
+            replay.apply(source, tm.getTime())
+            # The solver samples the maps at the updated pose and uses the
+            # rigid body's point velocities. step() alone only exports frames.
+            if not simulator.timeStepNoGUI():
+                raise RuntimeError("SPH stopped before the requested duration")
+            step_count += 1
+            if step_count % 100 == 0:
+                print(f"t={tm.getTime():.3f} s steps={step_count}", flush=True)
+
+        print(f"Replay completed at t={tm.getTime():.3f} s after {step_count} steps")
+        print(f"Output directory {output}")
+    finally:
+        simulator.cleanup()
 
 
 def main():
@@ -151,113 +204,17 @@ def main():
     )
     args = parser.parse_args()
 
+    if not np.isfinite(args.duration) or args.duration <= 0:
+        parser.error("--duration must be positive and finite")
+
     scene_path = Path(args.scene).resolve()
-    animated_scene = scene_path.with_name(
-        "scene_animated.json"
-    )
-    prepare_animated_scene(scene_path, animated_scene)
-
     replay = DrakeReplay(args.trajectory)
-
-    simulator = sph.Exec.SimulatorBase()
-
-    argv = [
-        "SPHSimulator",
-        str(animated_scene),
-        "--no-gui",
-        "--no-initial-pause",
-        "--stopAt",
-        str(args.duration),
-        "--output-dir",
-        str(Path(args.output).resolve()),
-    ]
-
-    # The exact pybind11 initialization signature can vary
-    # between SPlisHSPlasH builds.
-    try:
-        simulator.init(argv, "SPHSimulator")
-    except TypeError as exc:
-        raise RuntimeError(
-            "SimulatorBase.init() has a different signature "
-            "in this build. Its pybind11 signature is:\n"
-            f"{sph.Exec.SimulatorBase.init.__doc__}"
-        ) from exc
-
-    simulator.initSimulation()
-
-    simulation = sph.Simulation.getCurrent()
-
-    print("Before boundary initialization:",
-          simulation.numberOfBoundaryModels())
-
-    boundary_simulator = simulator.getBoundarySimulator()
-    boundary_simulator.initBoundaryData()
-
-    print("After boundary initialization:",
-          simulation.numberOfBoundaryModels())
-
-    print("\n=== SPH initialization diagnostics ===")
-
-    print("Boundary model count:",
-          simulation.numberOfBoundaryModels())
-
-    print("Boundary simulator:",
-          type(simulator.getBoundarySimulator()).__name__)
-
-    print("Simulation time:",
-          sph.TimeManager.getCurrent().getTime())
-
-    for i in range(simulation.numberOfBoundaryModels()):
-        boundary = simulation.getBoundaryModel(i)
-        body = boundary.getRigidBodyObject()
-
-        print(f"\nBoundary {i}:")
-        print("  Type:", type(boundary).__name__)
-        print("  Body type:", type(body).__name__)
-        print("  Position:", body.getPosition())
-        print("  Rotation:", body.getRotation())
-
-    print("=== End diagnostics ===\n")
-
-    if simulation.numberOfBoundaryModels() < 2:
-        raise RuntimeError("Expected two boundary models")
-
-    source_boundary = simulation.getBoundaryModel(1)
-    source_body = source_boundary.getRigidBodyObject()
-
-    source_body.setIsAnimated(True)
-
-    print("Starting Drake-driven SPH replay")
-
-    step_count = 0
-
-    while sph.TimeManager.getCurrent().getTime() < args.duration:
-        tm = sph.TimeManager.getCurrent()
-        t = tm.getTime()
-
-        replay.apply(source_body, t)
-
-        # Update the moving boundary representation before
-        # advancing the fluid solver.
-        #
-        # This API's argument signature and behavior must be
-        # verified against the installed build.
-        simulator.updateBoundaryParticles(True)
-
-        simulator.step()
-        step_count += 1
-
-        if step_count % 100 == 0:
-            print(
-                f"t={tm.getTime():.3f} s "
-                f"steps={step_count}"
-            )
-
-    print("Replay completed")
-    print("Steps:", step_count)
-    print("Output:", args.output)
-
-    simulator.cleanup()
+    # Keep relative scene assets and the volume-map cache resolvable.
+    with NamedTemporaryFile(
+        dir=scene_path.parent, prefix="scene_animated_", suffix=".json"
+    ) as animated_scene:
+        prepare_animated_scene(scene_path, animated_scene.name)
+        replay_scene(animated_scene.name, replay, args.duration, Path(args.output).resolve())
 
 
 if __name__ == "__main__":
