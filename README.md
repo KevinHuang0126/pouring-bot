@@ -51,18 +51,40 @@ export OMP_NUM_THREADS=1
   --trajectory drake_vessel_trajectory.csv \
   --scene-dir sph_pouring_trial/eval_scene \
   --output sph_pouring_trial/moving_3s
-
-.venv/bin/python evaluate_sph_spill.py \
-  --trajectory drake_vessel_trajectory.csv --hold-source \
-  --scene-dir sph_pouring_trial/eval_scene \
-  --output sph_pouring_trial/fixed_3s
 ```
 
-The checked-in CSV runs through 3 seconds. The evaluator generates the cup meshes, initial fill, and scene from it. The first run builds the volume maps in the scene directory. Reuse that directory across serial runs and give each run a fresh output directory. Set `--duration` for a shorter run. Runs write `spill_report.json`, VTK frames, and the solver log. Keep the same build, template, initial fill, duration, and thread count when comparing motions.
+The checked-in CSV runs for 3 seconds. Use `--duration 0.03` for a quick run or `--hold-source` for a fixed-vessel control. Each run keeps its own scene, VTK frames, log, and `spill_report.json`. Use a new or empty output directory for each run. Reuse `--scene-dir` to share volume maps across serial runs with the same SPlisHSPlasH build. Use separate cache directories for parallel processes. The first run for a cup shape builds its map. Without `--scene-dir`, the maps live with the run's scene.
 
-**Export robot motions.** Use `TrajectoryRecorder` in `drake_trajectory_export.py` to record `plant.EvalBodyPoseInWorld(context, source_body)` at each sample. Record the vessel's bottom-center origin with body name `source`, in meters, with Z up, at strictly increasing timestamps starting at zero. The CSV columns are `time_s,body,x_m,y_m,z_m,qw,qx,qy,qz`. Transform the gripper pose to the vessel frame before export if they differ. The evaluator uses the demo's upright initial fill, requires an identity initial source rotation, and keeps the receiver at `(0.110, 0, 0)` m. To regenerate the demo CSV, install Drake in an environment it supports and run `python drake_pouring_simulation.py --no-vis` from the repository root. Drake is only needed to produce the CSV.
+**Call from Python.** The same API accepts a CSV path or a `TrajectoryRecorder` instance. The returned dictionary matches the JSON report. If `output` is omitted, the function creates a fresh temporary directory and returns its path as `output_dir`.
 
-**Interpret the report.** The three counts `in_source`, `in_receiver`, and `outside_both` partition the final particle centers using the generated cups' faceted interiors and the source pose actually applied on the last step. `outside_fraction` is a provisional spill proxy and includes any fluid still in flight or inside a solid. `below_world_z_zero` is a separate diagnostic. The replay is one-way, with prescribed vessel motion and no table or ground contact. Use the counts for motion comparisons under identical settings. `spill_measurement_validated: false` indicates that quantitative spill accuracy remains unverified, so treat these outputs as provisional metrics for optimization and training.
+```python
+from evaluate_sph_spill import evaluate
+
+result = evaluate(
+    "drake_vessel_trajectory.csv",
+    output="sph_pouring_trial/python_run",
+    scene_dir="sph_pouring_trial/eval_scene",
+)
+print(result["collected_fraction"], result["remaining_fraction"], result["outside_fraction"])
+```
+
+**Configure cups and fill.** Pass `config=PouringConfig(...)` in Python (import it from `evaluate_sph_spill`), or add `--config cups.json` to the command. Omitted fields keep the demo defaults. The JSON below shows all defaults.
+
+```json
+{
+  "source_cup": [0.035, 0.003, 0.110, 0.004],
+  "receiver_cup": [0.060, 0.004, 0.120, 0.004],
+  "receiver_origin": [0.110, 0, 0],
+  "fill_start": [-0.022, -0.022, 0.012],
+  "fill_end": [0.022, 0.022, 0.080]
+}
+```
+
+Cup dimensions are inner radius, wall thickness, total height, and base thickness, in meters. The stationary receiver origin is its bottom center in world coordinates. The fill bounds are the opposite corners of a box in the initial source frame, measured from the bottom center. Keep the entire box inside the source cavity. Compare candidate motions with the same build, geometry, fill, duration, and thread count.
+
+**Export robot motions.** Use `TrajectoryRecorder` in `drake_trajectory_export.py` to record `plant.EvalBodyPoseInWorld(context, source_body)` at each sample. Record the vessel's bottom-center origin with body name `source`, in meters, with Z up, at strictly increasing timestamps starting at zero. The CSV columns are `time_s,body,x_m,y_m,z_m,qw,qx,qy,qz`. Transform the gripper pose to the vessel frame before export if they differ. The evaluator uses the demo's upright initial fill, requires an identity initial source rotation, and defaults the receiver origin to `(0.110, 0, 0)` m. To regenerate the demo CSV, install Drake in an environment it supports and run `python drake_pouring_simulation.py --no-vis` from the repository root. Drake is only needed to produce the CSV.
+
+**Interpret the report.** The three counts `in_source`, `in_receiver`, and `outside_both` partition the final particle centers using the generated cups' faceted interiors and the source pose actually applied on the last step. The fractions are normalized by the final particle count. `outside_fraction` is a provisional spill proxy and includes any fluid still in flight or inside a solid. `below_world_z_zero` is a separate diagnostic. The replay is one-way, with prescribed vessel motion and no table or ground contact. Use the counts for motion comparisons under identical settings. `spill_measurement_validated: false` indicates that quantitative spill accuracy remains unverified, so treat these outputs as provisional metrics for optimization and training.
 
 ### Containment investigation
 

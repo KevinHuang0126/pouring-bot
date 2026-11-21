@@ -62,3 +62,56 @@ class SpillClassificationTest(unittest.TestCase):
                     )
                     self.assertTrue(all(n == edges[end, start] == 1
                                         for (start, end), n in edges.items()))
+
+
+class EvaluatorInterfaceTest(unittest.TestCase):
+    def test_recorder_report_uses_configured_scene_and_isolated_outputs(self):
+        import json
+        import sys
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+
+        from drake_trajectory_export import TrajectoryRecorder
+        from evaluate_sph_spill import PouringConfig, evaluate
+
+        origin = np.array([0.0, 0.0, 0.16])
+        recorder = TrajectoryRecorder()
+        recorder.rows = [
+            [time, "source", *origin, 1, 0, 0, 0] for time in (0.0, 0.1)
+        ]
+        config = PouringConfig(
+            source_cup=(0.036, 0.003, 0.112, 0.005),
+            receiver_cup=(0.061, 0.004, 0.122, 0.006),
+            receiver_origin=(0.2, 0, 0),
+            fill_end=(0.02, 0.02, 0.06),
+        )
+        replay = SimpleNamespace(times=[0, 0.1], pose=lambda _: (origin, np.eye(3)))
+        binding = SimpleNamespace(
+            DrakeReplay=Mock(return_value=replay),
+            prepare_animated_scene=Mock(),
+            replay_scene=Mock(return_value=(0.1, 0.099, np.array([
+                [0, 0, 0.175], [0.2, 0, 0.005], [0.2, 0, 0.05], [0.3, 0, 0.2],
+            ]))),
+        )
+
+        with TemporaryDirectory() as tmp, patch.dict(sys.modules, {"sph_drake_replay": binding}):
+            root = Path(tmp)
+            cache = root / "cache"
+            for name in ("first", "second"):
+                output = root / name
+                result = evaluate(recorder, output=output, scene_dir=cache, config=config)
+                self.assertEqual(result, json.loads((output / "spill_report.json").read_text()))
+                self.assertIs(result["spill_measurement_validated"], False)
+                self.assertEqual(result["classification"], "final_particle_centers")
+                self.assertEqual(result["collected_fraction"], 0.25)
+                self.assertEqual(result["remaining_fraction"], 0.25)
+                self.assertEqual(result["outside_fraction"], 0.50)
+                scene = output / "scene"
+                self.assertEqual((scene / "Cache").resolve(), cache.resolve() / "Cache")
+                payload = json.loads((scene / "scene_static.json").read_text())
+                self.assertEqual(payload["RigidBodies"][1]["translation"], [0.2, 0, 0])
+                np.testing.assert_allclose(payload["FluidBlocks"][0]["end"], [0.02, 0.02, 0.22])
+            self.assertEqual(binding.replay_scene.call_count, 2)
+            with self.assertRaisesRegex(ValueError, "new or empty"):
+                evaluate(recorder, root / "first", scene_dir=cache, config=config)
+            self.assertEqual(binding.replay_scene.call_count, 2)

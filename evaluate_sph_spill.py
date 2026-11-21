@@ -3,21 +3,26 @@
 import argparse
 import json
 from pathlib import Path
-from tempfile import NamedTemporaryFile
+from tempfile import mkdtemp
+from threading import Lock
 
 import numpy as np
 
+from drake_trajectory_export import TrajectoryRecorder
 from prepare_sph_pouring import (
     CUP_BOTTOM,
     CUP_SEGMENTS,
-    RECEIVER_CUP,
-    RECEIVER_ORIGIN,
-    SOURCE_CUP,
+    DEFAULT_CONFIG,
+    PouringConfig,
     prepare_scene,
 )
 
 
-def inside_cup(points, cup):
+DEFAULT_TEMPLATE = Path(__file__).with_name("DoubleDamBreak_export.json")
+_REPLAY_LOCK = Lock()
+
+
+def inside_cup(points, cup, *, bottom=CUP_BOTTOM):
     """Test particle centers in the faceted cavity in cup-local coordinates."""
     radius, _, height = cup
     half_segment = np.pi / CUP_SEGMENTS
@@ -27,16 +32,22 @@ def inside_cup(points, cup):
     distance = np.hypot(x, y) * np.cos(angle)
     return (
         (distance < radius * np.cos(half_segment))
-        & (z > CUP_BOTTOM)
+        & (z > bottom)
         & (z < height)
     )
 
 
-def classify(positions, source_origin, source_rotation):
+def classify(positions, source_origin, source_rotation, *, config=DEFAULT_CONFIG):
     if len(positions) == 0 or not np.isfinite(positions).all():
         raise RuntimeError("SPH returned empty or non-finite particle positions")
-    in_source = inside_cup((positions - source_origin) @ source_rotation, SOURCE_CUP)
-    in_receiver = inside_cup(positions - RECEIVER_ORIGIN, RECEIVER_CUP)
+    in_source = inside_cup(
+        (positions - source_origin) @ source_rotation,
+        config.source_cup[:3], bottom=config.source_cup[3],
+    )
+    in_receiver = inside_cup(
+        positions - config.receiver_origin,
+        config.receiver_cup[:3], bottom=config.receiver_cup[3],
+    )
     if np.any(in_source & in_receiver):
         raise RuntimeError("Source and receiver cavity classifications overlap")
     total = len(positions)
@@ -48,13 +59,38 @@ def classify(positions, source_origin, source_rotation):
         "in_source": source_count,
         "in_receiver": receiver_count,
         "outside_both": outside_count,
+        "collected_fraction": receiver_count / total,
+        "remaining_fraction": source_count / total,
         "outside_fraction": outside_count / total,
         "below_world_z_zero": int((positions[:, 2] < 0).sum()),
     }
 
 
-def evaluate(trajectory, output, scene_dir, template, duration=None, *, hold_source=False):
+def evaluate(
+    trajectory: str | Path | TrajectoryRecorder,
+    output: str | Path | None = None,
+    scene_dir: str | Path | None = None,
+    template: str | Path = DEFAULT_TEMPLATE,
+    duration: float | None = None,
+    *,
+    hold_source: bool = False,
+    config: PouringConfig = DEFAULT_CONFIG,
+) -> dict:
+    """Replay a CSV or an in-memory Drake recorder and return the JSON report.
+
+    Each run owns its output and scene. Pass the same scene_dir to reuse
+    volume maps across serial runs. When output is omitted, a fresh temporary
+    directory is created and its path is returned in the report.
+    """
     from sph_drake_replay import DrakeReplay, prepare_animated_scene, replay_scene
+
+    output = Path(mkdtemp(prefix="sph-evaluation-")) if output is None else Path(output).resolve()
+    if output.exists() and (not output.is_dir() or any(output.iterdir())):
+        raise ValueError("output must be a new or empty directory")
+    scene_path = output / "scene"
+    scene_path.mkdir(parents=True)
+    if isinstance(trajectory, TrajectoryRecorder):
+        trajectory = trajectory.save(output / "input_trajectory.csv")
 
     replay = DrakeReplay(trajectory, hold_source=hold_source)
     if replay.times[0] != 0:
@@ -62,31 +98,33 @@ def evaluate(trajectory, output, scene_dir, template, duration=None, *, hold_sou
     _, initial_rotation = replay.pose(0)
     if not np.allclose(initial_rotation, np.eye(3), atol=1e-6, rtol=0):
         raise ValueError("The generated fill requires an identity initial source rotation")
-    if duration is None:
-        duration = float(replay.times[-1])
+    duration = float(replay.times[-1] if duration is None else duration)
     if not np.isfinite(duration) or not 0 < duration <= replay.times[-1]:
         raise ValueError("Duration must be positive and within the exported trajectory")
 
-    scene = prepare_scene(trajectory, scene_dir, template)
-    output.mkdir(parents=True, exist_ok=True)
-    with NamedTemporaryFile(
-        dir=scene.parent, prefix="scene_animated_", suffix=".json"
-    ) as animated_scene:
-        prepare_animated_scene(scene, animated_scene.name)
-        time, pose_time, positions = replay_scene(
-            animated_scene.name, replay, duration, output
-        )
+    scene = prepare_scene(trajectory, scene_path, template, settings=config)
+    animated_scene = scene_path / "scene_animated.json"
+    prepare_animated_scene(scene, animated_scene)
+    if scene_dir is not None and Path(scene_dir).resolve() != scene_path:
+        cache = Path(scene_dir).resolve() / "Cache"
+        cache.mkdir(parents=True, exist_ok=True)
+        (scene_path / "Cache").symlink_to(cache, target_is_directory=True)
+
+    # The native simulator owns process-global state.
+    with _REPLAY_LOCK:
+        time, pose_time, positions = replay_scene(animated_scene, replay, duration, output)
 
     origin, rotation = replay.pose(pose_time)
     report = {
         "schema_version": 1,
         "classification": "final_particle_centers",
         "spill_measurement_validated": False,
+        "output_dir": str(output),
         "requested_duration_s": duration,
         "simulation_time_s": time,
         "source_held_fixed": hold_source,
         "applied_source_pose_time_s": 0.0 if hold_source else pose_time,
-        **classify(positions, origin, rotation),
+        **classify(positions, origin, rotation, config=config),
     }
     (output / "spill_report.json").write_text(json.dumps(report, indent=2) + "\n")
     return report
@@ -98,23 +136,26 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
         "--scene-dir", type=Path,
-        help="Reusable generated-scene and volume-map cache directory",
+        help="Reusable volume-map cache directory for serial runs",
     )
     parser.add_argument(
         "--template", type=Path,
-        default=Path(__file__).with_name("DoubleDamBreak_export.json"),
+        default=DEFAULT_TEMPLATE,
     )
     parser.add_argument("--duration", type=float, help="Default is the trajectory end time")
     parser.add_argument("--hold-source", action="store_true", help="Run a fixed-vessel control")
+    parser.add_argument("--config", type=Path, help="JSON cup and fill overrides")
     args = parser.parse_args()
-    if args.output.exists() and any(args.output.iterdir()):
-        parser.error("--output must be a new or empty directory")
-
-    output = args.output.resolve()
-    report = evaluate(
-        args.trajectory, output, args.scene_dir or output / "scene",
-        args.template, args.duration, hold_source=args.hold_source,
-    )
+    try:
+        config = DEFAULT_CONFIG if args.config is None else PouringConfig(
+            **json.loads(args.config.read_text())
+        )
+        report = evaluate(
+            args.trajectory, args.output, args.scene_dir, args.template, args.duration,
+            hold_source=args.hold_source, config=config,
+        )
+    except (ValueError, TypeError, OSError) as exc:
+        parser.error(str(exc))
     print(json.dumps(report, indent=2))
 
 

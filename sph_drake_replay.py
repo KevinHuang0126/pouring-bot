@@ -46,8 +46,10 @@ def load_trajectory(path):
     positions = np.asarray(positions)
     quaternions = np.asarray(quaternions)
 
-    if len(times) < 2 or not np.all(np.diff(times) > 0):
-        raise ValueError("Trajectory needs increasing timestamps")
+    if len(times) < 2 or not np.isfinite(times).all() or not np.all(np.diff(times) > 0):
+        raise ValueError("Trajectory needs finite, increasing timestamps")
+    if not np.isfinite(positions).all() or not np.isfinite(quaternions).all():
+        raise ValueError("Trajectory poses must be finite")
 
     rotations = Slerp(
         times, Rotation.from_quat(quaternions)

@@ -6,6 +6,8 @@ import argparse
 import csv
 import json
 import math
+from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 
 
@@ -14,6 +16,60 @@ RECEIVER_CUP = (0.060, 0.004, 0.120)
 RECEIVER_ORIGIN = (0.110, 0.0, 0.0)
 CUP_SEGMENTS = 64
 CUP_BOTTOM = 0.004
+
+
+PARTICLE_RADIUS = 0.003
+
+
+@dataclass(frozen=True)
+class PouringConfig:
+    """Cup dimensions and initial source-local fill bounds, in meters."""
+
+    source_cup: tuple[float, float, float, float] = (*SOURCE_CUP, CUP_BOTTOM)
+    receiver_cup: tuple[float, float, float, float] = (*RECEIVER_CUP, CUP_BOTTOM)
+    receiver_origin: tuple[float, float, float] = RECEIVER_ORIGIN
+    fill_start: tuple[float, float, float] = (-0.022, -0.022, 0.012)
+    fill_end: tuple[float, float, float] = (0.022, 0.022, 0.080)
+
+    def __post_init__(self):
+        for name, size in (("source_cup", 4), ("receiver_cup", 4),
+                           ("receiver_origin", 3), ("fill_start", 3), ("fill_end", 3)):
+            values = tuple(float(value) for value in getattr(self, name))
+            if len(values) != size or not all(map(math.isfinite, values)):
+                raise ValueError(f"{name} requires {size} finite values in meters")
+            object.__setattr__(self, name, values)
+
+        for cup in (self.source_cup, self.receiver_cup):
+            if min(cup) <= 0 or cup[3] >= cup[2]:
+                raise ValueError("Cup dimensions must be positive with base thickness below rim height")
+
+        # Cubic sampling needs round(extent / particle diameter) >= 3 per axis.
+        min_extent = 5 * PARTICLE_RADIUS
+        if any(hi - lo <= min_extent for lo, hi in zip(self.fill_start, self.fill_end)):
+            raise ValueError(f"Initial fill must span over {min_extent:g} m on each axis")
+        radius, _, height, bottom = self.source_cup
+        x = max(abs(self.fill_start[0]), abs(self.fill_end[0]))
+        y = max(abs(self.fill_start[1]), abs(self.fill_end[1]))
+        normal_angles = (2 * math.pi * (i + 0.5) / CUP_SEGMENTS for i in range(CUP_SEGMENTS))
+        corner_distance = max(x * abs(math.cos(a)) + y * abs(math.sin(a))
+                              for a in normal_angles)
+        if (corner_distance >= radius * math.cos(math.pi / CUP_SEGMENTS)
+                or self.fill_start[2] <= bottom or self.fill_end[2] >= height):
+            raise ValueError("Initial fill bounds must fit inside the source cavity")
+
+
+DEFAULT_CONFIG = PouringConfig()
+
+
+def write_cup(output, name, dimensions, default):
+    # Native volume-map caches use the mesh basename. Preserve the existing
+    # demo cache names and give each custom mesh its own stable name.
+    if dimensions != default:
+        digest = sha256(repr(dimensions).encode()).hexdigest()[:16]
+        name = f"{name}_{digest}"
+    path = output / f"{name}.obj"
+    cup_mesh(path, *dimensions[:3], bottom=dimensions[3])
+    return path
 
 
 def cup_mesh(path, inner, wall, height, segments=CUP_SEGMENTS, bottom=CUP_BOTTOM):
@@ -50,7 +106,7 @@ def cup_mesh(path, inner, wall, height, segments=CUP_SEGMENTS, bottom=CUP_BOTTOM
             f.write(f'f {a+1} {b+1} {c+1}\n')
 
 
-def prepare_scene(trajectory, output, template):
+def prepare_scene(trajectory, output, template, *, settings=DEFAULT_CONFIG):
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     trajectory = Path(trajectory).resolve()
@@ -63,11 +119,11 @@ def prepare_scene(trajectory, output, template):
     if any(b <= a for a,b in zip(times,times[1:])):
         raise ValueError('Trajectory times must be strictly increasing')
     (output/'source_trajectory.csv').write_text(trajectory.read_text())
-    cup_mesh(output/'source.obj', *SOURCE_CUP)
-    cup_mesh(output/'receiver.obj', *RECEIVER_CUP)
+    source_mesh = write_cup(output, "source", settings.source_cup, DEFAULT_CONFIG.source_cup)
+    receiver_mesh = write_cup(output, "receiver", settings.receiver_cup, DEFAULT_CONFIG.receiver_cup)
     template = json.loads(Path(template).read_text())
     config = template['Configuration']
-    config.update({'particleRadius': 0.003, 'gravitation': [0,0,-9.81],
+    config.update({'particleRadius': PARTICLE_RADIUS, 'gravitation': [0,0,-9.81],
                    'boundaryHandlingMethod': 2,  # Bender2019 volume maps
                    'enableVTKExport': True, 'dataExportFPS': 30.0,
                    'particleAttributes': 'velocity;density'})
@@ -77,17 +133,17 @@ def prepare_scene(trajectory, output, template):
     config['cameraLookat'] = [0.06, 0, 0.12]
     scene = {'Configuration':config, 'Materials':template['Materials'],
              'RigidBodies':[
-                 {'geometryFile':str(output/'source.obj'), 'translation':origin,
+                 {'geometryFile':str(source_mesh), 'translation':origin,
                   'rotationAxis':[0,1,0], 'rotationAngle':0, 'scale':[1,1,1],
                   'isDynamic':False, 'isAnimated':False,
                   'mapResolution':[48,48,48]},
-                 {'geometryFile':str(output/'receiver.obj'),
-                  'translation':RECEIVER_ORIGIN, 'rotationAxis':[0,1,0],
+                 {'geometryFile':str(receiver_mesh),
+                  'translation':settings.receiver_origin, 'rotationAxis':[0,1,0],
                   'rotationAngle':0, 'scale':[1,1,1], 'isDynamic':False,
                   'mapResolution':[48,48,48]}],
              'FluidBlocks':[{'denseMode':0,
-                             'start':[origin[0]-0.022, origin[1]-0.022, origin[2]+0.012],
-                             'end':[origin[0]+0.022, origin[1]+0.022, origin[2]+0.080]}]}
+                             'start':[p + d for p, d in zip(origin, settings.fill_start)],
+                             'end':[p + d for p, d in zip(origin, settings.fill_end)]}]}
     (output/'scene_static.json').write_text(json.dumps(scene,indent=2)+'\n')
     (output/'trial_manifest.json').write_text(json.dumps({
         'trajectory': 'source_trajectory.csv', 'scene':'scene_static.json',
