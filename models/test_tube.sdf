@@ -1,5 +1,5 @@
 <?xml version="1.0"?>
-<sdf version="1.7">
+<sdf version="1.7" xmlns:drake="drake.mit.edu">
   <model name="test_tube">
     <!-- Link origin is the bottom of the tube. Cylinder length 0.12, radius 0.012. -->
     <link name="body">
@@ -24,6 +24,11 @@
         <geometry>
           <cylinder><radius>0.012</radius><length>0.12</length></cylinder>
         </geometry>
+      
+        <drake:proximity_properties>
+          <drake:mu_static>1.0</drake:mu_static>
+          <drake:mu_dynamic>1.0</drake:mu_dynamic>
+        </drake:proximity_properties>
       </collision>
     </link>
   </model>

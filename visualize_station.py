@@ -325,7 +325,15 @@ def print_gripper_force(
     Print measured gripper force if the
     station provides the relevant output.
     """
+    # Diagnostic: actual gripper contact forces
+    contact_forces = station.GetOutputPort(
+        "wsg_generalized_contact_forces"
+    ).Eval(station_context)
 
+    print(
+        "WSG generalized contact forces:",
+        np.round(np.asarray(contact_forces), 3),
+    )
     output_ports = {
         station.get_output_port(i).get_name()
         for i in range(
@@ -1242,4 +1250,3 @@ def main():
 if __name__ == "__main__":
 
     main()
-

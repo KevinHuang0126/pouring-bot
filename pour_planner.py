@@ -71,9 +71,9 @@ MAX_TILT_DEG = 110.0
 # Start with the same angle for all geometries.
 # These can be tuned independently later.
 VESSEL_TILT_ANGLES = {
-    "test_tube": 110.0,
-    "erlenmeyer": 110.0,
-    "boiling_flask": 110.0,
+    "test_tube": 95.0,
+    "erlenmeyer": 95.0,
+    "boiling_flask": 95.0,
 }
 
 # Geometry-specific tilt durations.
