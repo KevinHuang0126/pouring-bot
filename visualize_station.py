@@ -37,6 +37,7 @@ from grasp_planner import (
 )
 
 from pour_planner import execute_pour
+from drake_trajectory_export import TrajectoryRecorder
 
 
 # ==================================================
@@ -1142,6 +1143,8 @@ def main():
                 "pouring sequence..."
             )
 
+            trajectory_recorder = TrajectoryRecorder()
+
             pour_success = execute_pour(
                 simulator=simulator,
                 station=station,
@@ -1151,7 +1154,14 @@ def main():
                 meshcat=meshcat,
                 vessel_body=vessel_body,
                 vessel_name=vessel_name,
+                trajectory_recorder=trajectory_recorder,
             )
+
+            # Save even if the pour stopped early due to a slip.
+            trajectory_path = trajectory_recorder.save(
+                'trajectories/ik_pouring_trajectory.csv'
+            )
+            print('Actual IK vessel trajectory saved:', trajectory_path)
 
             # Report grip force after the
             # pouring sequence finishes or stops.

@@ -553,6 +553,8 @@ def command_cartesian_motion(
     duration,
     phase_name,
     settle_duration=SETTLE_DURATION,
+    trajectory_recorder=None,
+    trajectory_start_time=None,
 ):
     """
     Follow a desired vessel pose trajectory using
@@ -817,6 +819,19 @@ def command_cartesian_motion(
         simulator.AdvanceTo(
             start_time + i * dt
         )
+        # Record the actual simulated vessel pose.
+        if trajectory_recorder is not None:
+            trajectory_recorder.record(
+                time_s=(
+                    simulator.get_context().get_time()
+                    - trajectory_start_time
+                ),
+                body="source",
+                pose=plant.EvalBodyPoseInWorld(
+                    plant_context,
+                    vessel_body,
+                ),
+            )
 
         # ------------------------------------------
         # GRASP STABILITY CHECK
@@ -1034,11 +1049,26 @@ def execute_pour(
     meshcat,
     vessel_body,
     vessel_name,
+    trajectory_recorder=None,
 ):
     """
     Execute transport, tilt, pour, and recovery
     after successful pickup.
     """
+    trajectory_start_time = (
+        simulator.get_context().get_time()
+    )
+
+    # Record the first pose at t = 0.
+    if trajectory_recorder is not None:
+        trajectory_recorder.record(
+            time_s=0.0,
+            body="source",
+            pose=plant.EvalBodyPoseInWorld(
+                plant_context,
+                vessel_body,
+            ),
+        )
 
     # ----------------------------------------------
     # GET SELECTED VESSEL GEOMETRY
@@ -1186,6 +1216,8 @@ def execute_pour(
             duration=duration,
             phase_name=phase_name,
             settle_duration=settle_duration,
+            trajectory_recorder=trajectory_recorder,
+            trajectory_start_time=trajectory_start_time,
         )
 
     # ==============================================
