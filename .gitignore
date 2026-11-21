@@ -17,3 +17,12 @@ __pycache__/
 .env
 .env.*
 !.env.example
+
+# Generated SPH simulations
+sph_pouring_trial/
+*_output/
+__pycache__/
+*.pyc
+
+# Windows metadata
+*:Zone.Identifier
