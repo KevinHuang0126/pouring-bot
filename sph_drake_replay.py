@@ -57,13 +57,14 @@ def load_trajectory(path):
 
 
 class DrakeReplay:
-    def __init__(self, trajectory):
+    def __init__(self, trajectory, *, hold_source=False):
+        self.hold_source = hold_source
         self.times, self.positions, self.rotations = (
             load_trajectory(trajectory)
         )
 
     def pose(self, t):
-        t = float(np.clip(t, self.times[0], self.times[-1]))
+        t = self.times[0] if self.hold_source else np.clip(t, self.times[0], self.times[-1])
 
         p = np.array([
             np.interp(t, self.times, self.positions[:, i])
@@ -74,7 +75,7 @@ class DrakeReplay:
         return p, R
 
     def velocity(self, t):
-        if t < self.times[0] or t > self.times[-1]:
+        if self.hold_source or t < self.times[0] or t > self.times[-1]:
             return np.zeros(3), np.zeros(3)
 
         eps = 1e-4
@@ -127,7 +128,8 @@ def prepare_animated_scene(static_scene, output_scene):
         json.dump(scene, f, indent=2)
 
 
-def replay_scene(scene_path, replay, duration, output):
+def replay_scene(scene_path, replay, duration, output, *, on_step=None):
+    """Run a replay and return final time, last step start, and fluid centers."""
     simulator = sph.Exec.SimulatorBase()
     simulator.init(
         sceneFile=str(scene_path), outputDir=str(output),
@@ -167,20 +169,34 @@ def replay_scene(scene_path, replay, duration, output):
         offsets = np.asarray(body.getVertices()) - body.getPosition()
         source.setMaxDist(np.linalg.norm(offsets, axis=1).max())
 
+        pose_time = tm.getTime()
         step_count = 0
         print("Starting Drake-driven SPH replay", flush=True)
         while tm.getTime() < duration:
-            replay.apply(source, tm.getTime())
+            pose_time = tm.getTime()
+            replay.apply(source, pose_time)
             # The solver samples the maps at the updated pose and uses the
             # rigid body's point velocities. step() alone only exports frames.
             if not simulator.timeStepNoGUI():
                 raise RuntimeError("SPH stopped before the requested duration")
+            current_time = tm.getTime()
+            if not np.isfinite(current_time) or current_time <= pose_time:
+                raise RuntimeError("SPH simulation time stopped advancing")
             step_count += 1
+            if on_step is not None:
+                on_step(simulation, pose_time, current_time)
             if step_count % 100 == 0:
                 print(f"t={tm.getTime():.3f} s steps={step_count}", flush=True)
 
         print(f"Replay completed at t={tm.getTime():.3f} s after {step_count} steps")
         print(f"Output directory {output}")
+        positions = np.array([
+            model.getPosition(i)
+            for model in (simulation.getFluidModel(j)
+                          for j in range(simulation.numberOfFluidModels()))
+            for i in range(model.numActiveParticles())
+        ]).reshape(-1, 3)
+        return tm.getTime(), pose_time, positions
     finally:
         simulator.cleanup()
 

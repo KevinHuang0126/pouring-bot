@@ -9,7 +9,14 @@ import math
 from pathlib import Path
 
 
-def cup_mesh(path, inner, wall, height, segments=64, bottom=0.004):
+SOURCE_CUP = (0.035, 0.003, 0.110)
+RECEIVER_CUP = (0.060, 0.004, 0.120)
+RECEIVER_ORIGIN = (0.110, 0.0, 0.0)
+CUP_SEGMENTS = 64
+CUP_BOTTOM = 0.004
+
+
+def cup_mesh(path, inner, wall, height, segments=CUP_SEGMENTS, bottom=CUP_BOTTOM):
     """Watertight, open-top cup wall and base; z=0 is outer base bottom."""
     outer = inner + wall
     rings = [(outer, 0.0), (outer, height), (inner, height),
@@ -43,15 +50,10 @@ def cup_mesh(path, inner, wall, height, segments=64, bottom=0.004):
             f.write(f'f {a+1} {b+1} {c+1}\n')
 
 
-def main():
-    p = argparse.ArgumentParser()
-    p.add_argument('--trajectory', default='drake_vessel_trajectory.csv')
-    p.add_argument('--output', default='sph_pouring_trial')
-    p.add_argument('--template', default='DoubleDamBreak_export.json')
-    args = p.parse_args()
-    output = Path(args.output).resolve()
+def prepare_scene(trajectory, output, template):
+    output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=True)
-    trajectory = Path(args.trajectory).resolve()
+    trajectory = Path(trajectory).resolve()
     with trajectory.open(newline='') as f:
         rows = list(csv.DictReader(f))
     source = [r for r in rows if r['body'] == 'source']
@@ -61,9 +63,9 @@ def main():
     if any(b <= a for a,b in zip(times,times[1:])):
         raise ValueError('Trajectory times must be strictly increasing')
     (output/'source_trajectory.csv').write_text(trajectory.read_text())
-    cup_mesh(output/'source.obj', 0.035, 0.003, 0.110)
-    cup_mesh(output/'receiver.obj', 0.060, 0.004, 0.120)
-    template = json.loads(Path(args.template).read_text())
+    cup_mesh(output/'source.obj', *SOURCE_CUP)
+    cup_mesh(output/'receiver.obj', *RECEIVER_CUP)
+    template = json.loads(Path(template).read_text())
     config = template['Configuration']
     config.update({'particleRadius': 0.003, 'gravitation': [0,0,-9.81],
                    'boundaryHandlingMethod': 2,  # Bender2019 volume maps
@@ -80,7 +82,7 @@ def main():
                   'isDynamic':False, 'isAnimated':False,
                   'mapResolution':[48,48,48]},
                  {'geometryFile':str(output/'receiver.obj'),
-                  'translation':[0.110,0,0], 'rotationAxis':[0,1,0],
+                  'translation':RECEIVER_ORIGIN, 'rotationAxis':[0,1,0],
                   'rotationAngle':0, 'scale':[1,1,1], 'isDynamic':False,
                   'mapResolution':[48,48,48]}],
              'FluidBlocks':[{'denseMode':0,
@@ -92,7 +94,17 @@ def main():
         'duration_s':times[-1]-times[0],
         'status':'PREPARATION_ONLY_NO_MOVING_BOUNDARY_REPLAY',
         'note':'Static scene is a geometry/fluid smoke test, not a pouring result.'},indent=2)+'\n')
-    print('Prepared',output)
+    return output / 'scene_static.json'
+
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument('--trajectory', default='drake_vessel_trajectory.csv')
+    p.add_argument('--output', default='sph_pouring_trial')
+    p.add_argument('--template', default='DoubleDamBreak_export.json')
+    args = p.parse_args()
+    scene = prepare_scene(args.trajectory, args.output, args.template)
+    print('Prepared', scene)
     print('Replay vessel motion with sph_drake_replay.py.')
 
 if __name__ == '__main__':
