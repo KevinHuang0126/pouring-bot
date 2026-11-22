@@ -100,3 +100,23 @@ def load_trajectory(filename):
             )
 
     return dict(trajectories)
+
+
+class PoseInterpolation:
+    """Interpolate recorded poses with continuous linear and angular velocities."""
+
+    def __init__(self, times, positions, xyzw):
+        from scipy.interpolate import PchipInterpolator
+        from scipy.spatial.transform import Rotation, RotationSpline
+
+        self.times = np.asarray(times)
+        self.translation = PchipInterpolator(self.times, positions, axis=0)
+        self.rotation = RotationSpline(self.times, Rotation.from_quat(xyzw))
+
+    def pose(self, times):
+        times = np.clip(times, self.times[0], self.times[-1])
+        return self.translation(times), self.rotation(times).as_matrix()
+
+    def velocity(self, time):
+        rotation = self.rotation(time)
+        return self.translation(time, 1), rotation.apply(self.rotation(time, 1))

@@ -17,7 +17,9 @@ from tempfile import NamedTemporaryFile
 from pathlib import Path
 
 import numpy as np
-from scipy.spatial.transform import Rotation, Slerp
+from scipy.spatial.transform import Rotation
+
+from drake_trajectory_export import PoseInterpolation
 
 import pysplishsplash as sph
 
@@ -51,51 +53,21 @@ def load_trajectory(path):
     if not np.isfinite(positions).all() or not np.isfinite(quaternions).all():
         raise ValueError("Trajectory poses must be finite")
 
-    rotations = Slerp(
-        times, Rotation.from_quat(quaternions)
-    )
-
-    return times, positions, rotations
+    return times, PoseInterpolation(times, positions, quaternions)
 
 
 class DrakeReplay:
     def __init__(self, trajectory, *, hold_source=False):
         self.hold_source = hold_source
-        self.times, self.positions, self.rotations = (
-            load_trajectory(trajectory)
-        )
+        self.times, self.interpolation = load_trajectory(trajectory)
 
     def pose(self, t):
-        t = self.times[0] if self.hold_source else np.clip(t, self.times[0], self.times[-1])
-
-        p = np.array([
-            np.interp(t, self.times, self.positions[:, i])
-            for i in range(3)
-        ])
-
-        R = self.rotations([t])[0].as_matrix()
-        return p, R
+        return self.interpolation.pose(self.times[0] if self.hold_source else t)
 
     def velocity(self, t):
         if self.hold_source or t < self.times[0] or t > self.times[-1]:
             return np.zeros(3), np.zeros(3)
-
-        eps = 1e-4
-        t0 = max(self.times[0], t - eps)
-        t1 = min(self.times[-1], t + eps)
-
-        if t1 <= t0:
-            return np.zeros(3), np.zeros(3)
-
-        p0, R0 = self.pose(t0)
-        p1, R1 = self.pose(t1)
-
-        linear = (p1 - p0) / (t1 - t0)
-
-        relative = Rotation.from_matrix(R1 @ R0.T)
-        angular = relative.as_rotvec() / (t1 - t0)
-
-        return linear, angular
+        return self.interpolation.velocity(t)
 
     def apply(self, boundary, t, *, stationary=False):
         body = boundary.getRigidBodyObject()

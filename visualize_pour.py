@@ -8,9 +8,9 @@ import time
 from pathlib import Path
 
 import numpy as np
-from scipy.spatial.transform import Rotation, Slerp
+from scipy.spatial.transform import Rotation
 
-from drake_trajectory_export import load_trajectory
+from drake_trajectory_export import PoseInterpolation, load_trajectory
 
 
 def read_vtk_points(path):
@@ -56,10 +56,8 @@ def source_poses(trajectory, pose_times):
         raise ValueError("Expected at least two source pose samples")
     times, values = zip(*samples)
     values = np.asarray(values)
-    pose_times = np.clip(pose_times, times[0], times[-1])
-    xyz = np.column_stack([np.interp(pose_times, times, axis) for axis in values[:, :3].T])
-    xyzw = values[:, [4, 5, 6, 3]]
-    rotations = Slerp(times, Rotation.from_quat(xyzw))(pose_times).as_matrix()
+    interpolation = PoseInterpolation(times, values[:, :3], values[:, [4, 5, 6, 3]])
+    xyz, rotations = interpolation.pose(pose_times)
     return list(zip(rotations, xyz))
 
 
