@@ -54,3 +54,43 @@ Select a stable gripper grasp height for a previously unseen vessel geometry, pi
 
 **Current branch:** `shasha/ml-grasp-dataset`  
 **Current diverse dataset:** `grasp_dataset/shape_families/diverse_n3_p1_20261122_001031_seed84210/trials.csv`
+
+## Expanded Training and Novel-Shape Evaluation (November 2026)
+
+The training dataset was expanded from 120 trials across eight vessel
+families to 450 trials across nine families, including a new asymmetric
+waisted-bottle geometry.
+
+The numerical random forest uses vessel dimensions, mass properties,
+local radius, surface slope, and candidate grasp height. Vessel-family
+names are excluded from model inputs.
+
+### Expanded Dataset Results
+
+| Evaluation | Numerical ML | Fixed-height baseline | Sampled-height oracle |
+|---|---:|---:|---:|
+| Held-out geometries (90 vessels) | 75.6% | 60.0% | 95.6% |
+| Held-out families (90 vessels) | 66.7% | 55.6% | 95.6% |
+
+### Novel-Shape Transfer
+
+Four additional vessel families were evaluated: hourglass, stepped,
+double-bulge, and collared.
+
+On the same 20 novel vessels:
+
+| Method | Successful grasps |
+|---|---:|
+| Random forest trained on 120 trials | 13/20 (65%) |
+| Random forest trained on 450 trials | 17/20 (85%) |
+| Fixed-height baseline from 450-trial training | 12/20 (60%) |
+| Sampled-height oracle | 19/20 (95%) |
+
+The 85% result is a development-set result rather than a final
+independent evaluation, because the novel-vessel outcomes were
+previously inspected and the expanded training data included a
+related waisted-bottle family.
+
+Future work includes evaluation on a fresh held-out set of vessels
+and integrating numerical grasp predictions into the live Drake
+robotic pouring workflow.

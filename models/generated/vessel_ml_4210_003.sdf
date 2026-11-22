@@ -1,0 +1,59 @@
+<?xml version='1.0' encoding='utf-8'?>
+<sdf version="1.7">
+  <model name="vessel_ml_4210_003">
+    <link name="body">
+      <inertial>
+        <pose>0 0 0.045162174 0 0 0</pose>
+        <mass>0.099215672</mass>
+        <inertia>
+          <ixx>0.000130327532</ixx>
+          <ixy>0.000000000000</ixy>
+          <ixz>0.000000000000</ixz>
+          <iyy>0.000130327532</iyy>
+          <iyz>0.000000000000</iyz>
+          <izz>0.000053094893</izz>
+        </inertia>
+      </inertial>
+
+      <visual name="base">
+        <pose>0 0 0.035999 0 0 0</pose>
+        <geometry>
+          <cylinder>
+            <radius>0.034608</radius>
+            <length>0.071998</length>
+          </cylinder>
+        </geometry>
+      </visual>
+
+      <collision name="base">
+        <pose>0 0 0.035999 0 0 0</pose>
+        <geometry>
+          <cylinder>
+            <radius>0.034608</radius>
+            <length>0.071998</length>
+          </cylinder>
+        </geometry>
+      </collision>
+
+      <visual name="neck">
+        <pose>0 0 0.111129 0 0 0</pose>
+        <geometry>
+          <cylinder>
+            <radius>0.012371</radius>
+            <length>0.078262</length>
+          </cylinder>
+        </geometry>
+      </visual>
+
+      <collision name="neck">
+        <pose>0 0 0.111129 0 0 0</pose>
+        <geometry>
+          <cylinder>
+            <radius>0.012371</radius>
+            <length>0.078262</length>
+          </cylinder>
+        </geometry>
+      </collision>
+    </link>
+  </model>
+</sdf>

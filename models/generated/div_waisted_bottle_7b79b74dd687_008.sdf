@@ -1,0 +1,79 @@
+<?xml version="1.0"?>
+<sdf version="1.7" xmlns:drake="http://drake.mit.edu">
+  <model name="div_waisted_bottle_7b79b74dd687_008">
+    <link name="body">
+      <inertial>
+        <pose>0 0 0.089803816 0 0 0</pose>
+        <mass>0.057318662</mass>
+        <inertia>
+          <ixx>0.000107946760</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>0.000107946760</iyy><iyz>0</iyz><izz>0.000030506042</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual_0">
+        <pose>0 0 0.000000000 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/div_waisted_bottle_7b79b74dd687_008_part_00.obj</uri></mesh></geometry>
+        <material><diffuse>0.65 0.90 0.98 0.55</diffuse></material>
+      </visual>
+      <collision name="collision_0">
+        <pose>0 0 0.000000000 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/div_waisted_bottle_7b79b74dd687_008_part_00.obj</uri><drake:declare_convex/></mesh></geometry>
+        <drake:proximity_properties>
+          <drake:mu_static>1.0</drake:mu_static>
+          <drake:mu_dynamic>1.0</drake:mu_dynamic>
+        </drake:proximity_properties>
+      </collision>
+      <visual name="visual_1">
+        <pose>0 0 0.033444153 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/div_waisted_bottle_7b79b74dd687_008_part_01.obj</uri></mesh></geometry>
+        <material><diffuse>0.65 0.90 0.98 0.55</diffuse></material>
+      </visual>
+      <collision name="collision_1">
+        <pose>0 0 0.033444153 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/div_waisted_bottle_7b79b74dd687_008_part_01.obj</uri><drake:declare_convex/></mesh></geometry>
+        <drake:proximity_properties>
+          <drake:mu_static>1.0</drake:mu_static>
+          <drake:mu_dynamic>1.0</drake:mu_dynamic>
+        </drake:proximity_properties>
+      </collision>
+      <visual name="visual_2">
+        <pose>0 0 0.054413252 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/div_waisted_bottle_7b79b74dd687_008_part_02.obj</uri></mesh></geometry>
+        <material><diffuse>0.65 0.90 0.98 0.55</diffuse></material>
+      </visual>
+      <collision name="collision_2">
+        <pose>0 0 0.054413252 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/div_waisted_bottle_7b79b74dd687_008_part_02.obj</uri><drake:declare_convex/></mesh></geometry>
+        <drake:proximity_properties>
+          <drake:mu_static>1.0</drake:mu_static>
+          <drake:mu_dynamic>1.0</drake:mu_dynamic>
+        </drake:proximity_properties>
+      </collision>
+      <visual name="visual_3">
+        <pose>0 0 0.065433251 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/div_waisted_bottle_7b79b74dd687_008_part_03.obj</uri></mesh></geometry>
+        <material><diffuse>0.65 0.90 0.98 0.55</diffuse></material>
+      </visual>
+      <collision name="collision_3">
+        <pose>0 0 0.065433251 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/div_waisted_bottle_7b79b74dd687_008_part_03.obj</uri><drake:declare_convex/></mesh></geometry>
+        <drake:proximity_properties>
+          <drake:mu_static>1.0</drake:mu_static>
+          <drake:mu_dynamic>1.0</drake:mu_dynamic>
+        </drake:proximity_properties>
+      </collision>
+      <visual name="visual_4">
+        <pose>0 0 0.100924688 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/div_waisted_bottle_7b79b74dd687_008_part_04.obj</uri></mesh></geometry>
+        <material><diffuse>0.65 0.90 0.98 0.55</diffuse></material>
+      </visual>
+      <collision name="collision_4">
+        <pose>0 0 0.100924688 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/div_waisted_bottle_7b79b74dd687_008_part_04.obj</uri><drake:declare_convex/></mesh></geometry>
+        <drake:proximity_properties>
+          <drake:mu_static>1.0</drake:mu_static>
+          <drake:mu_dynamic>1.0</drake:mu_dynamic>
+        </drake:proximity_properties>
+      </collision>    </link>
+  </model>
+</sdf>

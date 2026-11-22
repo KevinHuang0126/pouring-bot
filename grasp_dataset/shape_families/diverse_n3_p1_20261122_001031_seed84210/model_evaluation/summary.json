@@ -1,0 +1,30 @@
+{
+  "scenarios": 24,
+  "model_success": 21,
+  "fixed_success": 12,
+  "oracle_success": 23,
+  "model_success_rate": 0.875,
+  "fixed_success_rate": 0.5,
+  "oracle_success_rate": 0.9583333333333334,
+  "features": [
+    "height_m",
+    "mass_kg",
+    "com_height_m",
+    "max_diameter_m",
+    "grasp_fraction",
+    "grasp_height_m",
+    "local_radius_m",
+    "local_slope_dr_dz",
+    "grasp_minus_com_m",
+    "grasp_minus_com_over_height",
+    "local_diameter_over_max_diameter",
+    "radius_below_10mm_m",
+    "radius_above_10mm_m",
+    "slope_below_10mm",
+    "slope_above_10mm",
+    "base_radius_m",
+    "mouth_radius_m",
+    "height_over_max_diameter"
+  ],
+  "note": "Oracle is the best among sampled candidate heights, not physically optimal. These are small, same-family holdouts; no evidence yet of transfer to an unseen shape family."
+}

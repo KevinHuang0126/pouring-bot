@@ -1,0 +1,9 @@
+heldout_family,geometries,scenarios,ml_success,fixed_success,oracle_success,training_selected_fraction,classification_accuracy,balanced_accuracy,roc_auc
+conical,3,3,2,0,3,0.6,0.4666666666666667,0.5,0.25
+cylinder,3,3,2,2,3,0.8,0.8,0.8,0.86
+flared_rim,3,3,0,0,3,0.6,0.6,0.55,0.68
+funnel,3,3,0,0,2,0.8,0.6666666666666666,0.5961538461538461,0.7307692307692307
+goblet,3,3,1,2,3,0.8,0.8,0.8333333333333333,0.6666666666666667
+inverted_taper,3,3,3,3,3,0.8,1.0,1.0,1.0
+round_bottom,3,3,2,2,2,0.8,0.6,0.6666666666666666,0.8148148148148149
+shouldered,3,3,3,3,3,0.8,0.7333333333333333,0.7321428571428572,0.7857142857142857

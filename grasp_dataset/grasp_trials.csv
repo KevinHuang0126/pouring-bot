@@ -1,0 +1,11 @@
+trial_id,vessel,source_x_m,source_y_m,grasp_height_m,pickup_success,pour_success,return_code,runtime_s,log_file
+1,test_tube,0.530923,0.059579,0.05,True,True,0,47.1,grasp_dataset/logs/trial_001.log
+2,erlenmeyer,0.515631,-0.220284,0.1,True,True,0,50.72,grasp_dataset/logs/trial_002.log
+3,erlenmeyer,0.462183,-0.133778,0.1,True,True,0,50.86,grasp_dataset/logs/trial_003.log
+4,boiling_flask,0.569272,-0.151011,0.13,True,False,0,29.24,grasp_dataset/logs/trial_004.log
+5,test_tube,0.4678,0.090581,0.05,True,True,0,46.66,grasp_dataset/logs/trial_005.log
+6,test_tube,0.379847,-0.057514,0.09,True,True,0,46.71,grasp_dataset/logs/trial_006.log
+7,boiling_flask,0.391098,-0.21721,0.15,False,False,0,16.53,grasp_dataset/logs/trial_007.log
+8,boiling_flask,0.383656,-0.034652,0.11,True,True,0,50.75,grasp_dataset/logs/trial_008.log
+9,test_tube,0.383753,-0.145138,0.07,True,True,0,46.67,grasp_dataset/logs/trial_009.log
+10,erlenmeyer,0.572008,-0.197726,0.1,True,True,0,50.69,grasp_dataset/logs/trial_010.log
