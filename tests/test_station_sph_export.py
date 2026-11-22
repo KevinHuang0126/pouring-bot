@@ -55,3 +55,43 @@ def test_station_samples_measured_poses_and_reuses_mesh_dimensions(tmp_path):
     assert scene["Configuration"]["cflMaxTimeStepSize"] == config.max_time_step
     for body, name in ((source, "test_tube"), (receiver, "beaker")):
         assert Path(body["geometryFile"]).read_bytes() == (output / f"{name}.obj").read_bytes()
+
+
+@pytest.mark.parametrize("name", ["erlenmeyer", "boiling_flask"])
+def test_flask_profiles_define_closed_walls_and_narrow_necks(tmp_path, name):
+    from collections import Counter
+
+    from evaluate_sph_spill import classify
+
+    root = Path(__file__).resolve().parents[1]
+    export = StationSphExport(tmp_path / name, root / "models", name)
+    export.configure((.72, .14, .20))
+    profile = export.config.source_profile
+    config = PouringConfig(source_profile=json.loads(json.dumps({
+        "outer": profile.outer, "inner": profile.inner,
+    })), receiver_profile=profile, receiver_origin=(.72, .14, .20),
+        fill_start=export.config.fill_start, fill_end=export.config.fill_end)
+    # The same radius fits in the body and lies outside the neck.
+    local_points = np.array([[.025, 0, .025], [.025, 0, .13], [0, 0, .13]])
+    np.testing.assert_array_equal(profile.contains(local_points), [True, False, True])
+    for points, source_count, receiver_count in (
+        (local_points, 2, 0), (local_points + config.receiver_origin, 0, 2),
+    ):
+        counts = classify(points, np.zeros(3), np.eye(3), config=config)
+        assert (counts["in_source"], counts["in_receiver"], counts["outside_both"]) == (
+            source_count, receiver_count, 1,
+        )
+    mesh = (export.output / f"{name}.obj").read_text().splitlines()
+    faces = [tuple(map(int, line.split()[1:])) for line in mesh if line.startswith("f ")]
+    edges = Counter((a, b) for face in faces for a, b in zip(face, (*face[1:], face[0])))
+    assert all(count == edges[b, a] == 1 for (a, b), count in edges.items())
+    with pytest.raises(ValueError, match="fill bounds"):
+        PouringConfig(source_profile=profile, fill_end=(.022, .022, .14))
+
+
+def test_profile_rejects_inner_wall_crossing_between_supplied_heights():
+    from prepare_sph_pouring import VesselProfile
+
+    with pytest.raises(ValueError, match="inside the outer wall"):
+        VesselProfile(outer=((0, .04), (.06, .01), (.1, .04)),
+                      inner=((.01, .03), (.1, .03)))

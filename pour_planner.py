@@ -230,7 +230,7 @@ def command_cartesian_motion(simulator, station, station_context, plant, plant_c
 
 
 def execute_pour(simulator, station, station_context, plant, plant_context, meshcat, vessel_body, vessel_name,
-                 *, record_pose=None):
+                 *, record_pose=None, complete_tilt=False):
     """Run all pouring phases; return motion success as before, not transfer success."""
     vessel_spec = VESSELS[vessel_name]
     fluid = create_fluid_state(vessel_name, FILL_FRACTION)
@@ -290,18 +290,25 @@ def execute_pour(simulator, station, station_context, plant, plant_context, mesh
     def tilt_pose(s):
         theta = np.deg2rad(max_tilt_deg * smoothstep(s))
         rotation = RotationMatrix.MakeYRotation(theta) @ R_start
+        if complete_tilt:
+            # Reserve horizontal room for the wrist during inversion. The SPH
+            # fill has its own release dynamics, so use a fixed mouth offset.
+            mouth = mouth_goal - np.array([.06 * smoothstep(s), 0., 0.])
+            return vessel_pose_from_mouth(mouth, rotation, vessel_spec)
         # Aiming-only floor; actual release uses true fill, including zero.
         aiming_fill = max(fluid.fill_fraction, .02) if DYNAMIC_AIMING else FILL_FRACTION
         return compute_aimed_vessel_pose(rotation, vessel_spec, mouth_z, aiming_fill)
-    if not run_motion(tilt_pose, tilt_duration, 'PHASE 8: Tilting vessel...', stop_when_empty=True):
+    # Reduced-order emptying is independent of the SPH fill and free surface.
+    if not run_motion(tilt_pose, tilt_duration, 'PHASE 8: Tilting vessel...',
+                      stop_when_empty=not complete_tilt):
         return False
 
-    if not fluid.is_empty:
+    if complete_tilt or not fluid.is_empty:
         fixed_pour_pose = tilt_pose(1.)
         def hold_pose(s):
             return tilt_pose(1.) if DYNAMIC_AIMING else fixed_pour_pose
         if not run_motion(hold_pose, POUR_HOLD_DURATION, 'PHASE 9: Holding pouring pose...',
-                          settle_duration=0., stop_when_empty=True):
+                          settle_duration=0., stop_when_empty=not complete_tilt):
             return False
     else:
         print('PHASE 9: Skipped - source already empty.')

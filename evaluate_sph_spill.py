@@ -11,9 +11,9 @@ import numpy as np
 from drake_trajectory_export import TrajectoryRecorder
 from prepare_sph_pouring import (
     CUP_BOTTOM,
-    CUP_SEGMENTS,
     DEFAULT_CONFIG,
     PouringConfig,
+    cylindrical_profile,
     prepare_scene,
 )
 
@@ -24,30 +24,18 @@ _REPLAY_LOCK = Lock()
 
 def inside_cup(points, cup, *, bottom=CUP_BOTTOM):
     """Test particle centers in the faceted cavity in cup-local coordinates."""
-    radius, _, height = cup
-    half_segment = np.pi / CUP_SEGMENTS
-    # Distance along the normal to the closest side of the regular polygon.
-    x, y, z = points.T
-    angle = np.arctan2(y, x) % (2 * half_segment) - half_segment
-    distance = np.hypot(x, y) * np.cos(angle)
-    return (
-        (distance < radius * np.cos(half_segment))
-        & (z > bottom)
-        & (z < height)
-    )
+    return cylindrical_profile((*cup[:3], bottom)).contains(points)
 
 
 def classify(positions, source_origin, source_rotation, *, config=DEFAULT_CONFIG):
     if len(positions) == 0 or not np.isfinite(positions).all():
         raise RuntimeError("SPH returned empty or non-finite particle positions")
-    in_source = inside_cup(
-        (positions - source_origin) @ source_rotation,
-        config.source_cup[:3], bottom=config.source_cup[3],
-    )
-    in_receiver = inside_cup(
-        positions - config.receiver_origin,
-        config.receiver_cup[:3], bottom=config.receiver_cup[3],
-    )
+    source_local = (positions - source_origin) @ source_rotation
+    receiver_local = positions - config.receiver_origin
+    in_source = (config.source_profile.contains(source_local) if config.source_profile
+                 else inside_cup(source_local, config.source_cup[:3], bottom=config.source_cup[3]))
+    in_receiver = (config.receiver_profile.contains(receiver_local) if config.receiver_profile
+                   else inside_cup(receiver_local, config.receiver_cup[:3], bottom=config.receiver_cup[3]))
     if np.any(in_source & in_receiver):
         raise RuntimeError("Source and receiver cavity classifications overlap")
     total = len(positions)

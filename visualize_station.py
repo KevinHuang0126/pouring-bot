@@ -860,19 +860,24 @@ def localize_source_vessel(
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--export-dir", type=Path, help="Export measured poses and matched SPH config")
+    parser.add_argument("--export-partial", action="store_true",
+                        help="Write the measured prefix if the planner aborts")
+    parser.add_argument("--vessel", choices=VESSELS, help="Select a fixed source vessel")
     parser.add_argument("--randomize-position", action="store_true", help="Randomize source position")
     args = parser.parse_args()
     exporting = args.export_dir is not None
+    if args.export_partial and not exporting:
+        parser.error("--export-partial requires --export-dir")
     if exporting and PERCEPTION_ONLY:
         parser.error("Pose export requires motion. Set PERCEPTION_ONLY = False.")
     use_camera = USE_CAMERA_LOCALIZATION and not exporting
     randomize_position = args.randomize_position or (RANDOMIZE_POSITION and not exporting)
-    randomize_vessel = RANDOMIZE_VESSEL and not exporting
+    randomize_vessel = RANDOMIZE_VESSEL and not exporting and args.vessel is None
     capture = None
     if exporting:
         from station_sph_export import StationSphExport
 
-        capture = StationSphExport(args.export_dir, PACKAGE_XML.parent)
+        capture = StationSphExport(args.export_dir, PACKAGE_XML.parent, args.vessel or "test_tube")
     record_pose = capture.record_pose if capture else None
 
     # ----------------------------------------------
@@ -908,7 +913,7 @@ def main():
 
     else:
 
-        vessel_name = "test_tube" if exporting else FIXED_VESSEL
+        vessel_name = args.vessel or ("test_tube" if exporting else FIXED_VESSEL)
 
     # ----------------------------------------------
     # SELECT SOURCE POSITION
@@ -1642,6 +1647,7 @@ def main():
                 vessel_body=vessel_body,
                 vessel_name=vessel_name,
                 record_pose=record_pose,
+                complete_tilt=exporting,
             )
 
             print_gripper_force(
@@ -1751,8 +1757,10 @@ def main():
 
     if capture:
         if not pour_success:
-            raise RuntimeError("Station motion aborted before completing the pour")
-        capture.save()
+            if not args.export_partial or len(capture.recorder.rows) < 2:
+                raise RuntimeError("Station motion aborted before completing the pour")
+            print("Exporting the measured prefix of the aborted motion.")
+        capture.save(motion_completed=pour_success)
     else:
         input("\nPress Enter to close.")
 

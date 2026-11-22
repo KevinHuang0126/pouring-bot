@@ -204,7 +204,7 @@ def play(trajectory, output, scene_path, *, no_robot=False, once=False):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--trajectory", type=Path, required=True)
+    parser.add_argument("--trajectory", type=Path, help="Defaults to the trajectory copied into the scene")
     parser.add_argument("--fluid-output", type=Path, required=True)
     parser.add_argument("--scene", type=Path, help="Scene JSON for older exports")
     parser.add_argument("--no-robot", action="store_true", help="Show cups and fluid only")
@@ -212,7 +212,8 @@ def main():
     args = parser.parse_args()
     scene = args.scene or args.fluid_output / "scene" / "scene_animated.json"
     try:
-        play(args.trajectory, args.fluid_output, scene, no_robot=args.no_robot, once=args.once)
+        trajectory = args.trajectory or scene.parent / "source_trajectory.csv"
+        play(trajectory, args.fluid_output, scene, no_robot=args.no_robot, once=args.once)
     except (ValueError, OSError) as exc:
         parser.error(str(exc))
     except KeyboardInterrupt:

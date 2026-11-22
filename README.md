@@ -42,31 +42,73 @@ After the SPH setup above, install the Drake station helper package. The station
 
 ```bash
 .venv/bin/python -m pip install 'manipulation==2026.10.17'
-run_dir=sph_pouring_trial/station_run_01
-OMP_NUM_THREADS=1 .venv/bin/python visualize_station.py --export-dir "$run_dir"
+vessel=test_tube
+run_dir="sph_pouring_trial/${vessel}_run_01"
+OMP_NUM_THREADS=1 .venv/bin/python visualize_station.py \
+  --vessel "$vessel" --export-dir "$run_dir"
 
 PYTHONPATH="$PWD/.venv/splishsplash/build/lib" OMP_NUM_THREADS=1 \
   .venv/bin/python evaluate_sph_spill.py \
-  --station-export "$run_dir" \
-  --scene-dir sph_pouring_trial/station_cache \
-  --output sph_pouring_trial/station_sph_01
+  --station-export "$run_dir" --scene-dir sph_pouring_trial/station_cache \
+  --output "${run_dir}_sph"
 
-.venv/bin/python visualize_pour.py \
-  --trajectory "$run_dir/source_trajectory.csv" \
-  --fluid-output sph_pouring_trial/station_sph_01 --no-robot
+.venv/bin/python visualize_pour.py --fluid-output "${run_dir}_sph" --no-robot
 ```
 
-Open the viewer's printed Meshcat URL. Use new directories for both the station export and the evaluation output each time. The evaluation command uses the patched project-local bindings and reads `cups.json` alongside the measured CSV. For a startup smoke check, add `--duration 0.4` to the evaluation command and use a separate output directory. Omit the duration to include the tilt and return. Add `--settle-duration 0.2` to let the initial fill settle while holding the first pose.
+Set `vessel=erlenmeyer` or `vessel=boiling_flask` for a different source. Drake writes a full station trajectory after the grasp and motion checks pass. Add `--export-partial` to keep the measured prefix for experiments when the planner aborts. Check `station_motion.json` for the completion flag. Add `--randomize-position` to vary the default source XY of `[0.42, -0.16]` m. Running without `--export-dir` uses the normal camera-guided workflow. Open the viewer's printed Meshcat URL. Use new directories for each station export and evaluation. The evaluator copies the trajectory into the output, where the viewer finds it automatically.
 
-The export uses the test tube at world XY `[0.42, -0.16]` and the known position as the grasp planner input. Add `--randomize-position` to vary the tube position. Run the station without `--export-dir` for the original camera-guided and randomized vessel workflow.
+The recorder samples the free vessel's measured world pose after simulator advances, beginning at zero before approach with the initial vessel upright. The pose origin is the outer bottom center. SPH initializes its own fill at rest before approach and uses a 1 ms timestep cap for station exports. Add `--settle-duration 0.2` to hold the first pose before replay. Add `--duration 0.4` for a startup check. Omit it to include the entire motion.
 
-The recorder samples the simulated tube body after simulator advances, starting at exactly zero before the approach. Its frame is at the outer bottom center, with identity initial rotation. The CSV covers approach, closure, lift, transport, tilt, and return. SPH creates the initial fill at rest in the upright tube. There is no earlier liquid state to carry over. Drake executes the grasp with dry contact dynamics and uses its reduced-order fluid model for aiming and flow estimates. SPH replays the measured motion one way with its own fill and spill results. The station export uses a 1 ms timestep cap because the demo timestep allowed fluid to eject during lift in this narrow tube.
+The original test-tube replay reversed at 77.2° after the reduced-order planner declared the tube empty. At peak tilt, the highest SPH particle was 3.2 mm below the low edge of the lip. Station export now completes the tilt and hold independently of that empty signal, with a small mouth offset for wrist clearance. Transfer depends on the executed motion, fill, and vessel.
 
-The station export generates the same hollow tube and beaker meshes used by SPH. Drake uses the hollow meshes for display and the original solid cylinders for rigid contact. The receiver's bottom center is read from the welded Drake body at world XYZ `[0.72, 0.14, 0.20]` m. The station viewer command shows the measured cup motion and SPH particles. The optional robot in the demo viewer uses inverse kinematics, so its joint poses can differ from the executed robot motion.
+Drake displays the same hollow mesh SPH uses. Rigid contact uses the station's existing solid proxies. The Erlenmeyer hollow mesh is a conical-body, straight-neck approximation to the station model. The boiling flask uses a faceted spherical bulb, a small flat base and a straight neck. The two flask meshes model the interior and neck explicitly. The station beaker is welded at world XYZ `[0.72, 0.14, 0.20]` m. The viewer command shows cups and particles. The optional demo robot uses inverse kinematics and can differ from the executed joint motion.
 
-### Supply your own Drake vessel trajectory
+### Run the short outflow control
 
-Use `TrajectoryRecorder` from `drake_trajectory_export.py`. At each Drake sample, record the held vessel's world pose with `recorder.record(t, "source", X_WC)`, then call `recorder.save("candidate.csv")`. Use the cup bottom center as the pose origin, meters, Z up, and strictly increasing timestamps beginning at zero. If the robot logs gripper poses, compose each with the fixed gripper-to-cup transform to obtain `X_WC`. The generated initial fill expects an identity initial cup rotation. Pass the same CSV to the evaluator and the viewer. Use the configuration fields below to match the cup dimensions, receiver placement, and fill to your setup.
+```bash
+control=sph_pouring_trial/control_120deg_01
+.venv/bin/python station_sph_export.py --controlled "$control" --vessel test_tube
+PYTHONPATH="$PWD/.venv/splishsplash/build/lib" OMP_NUM_THREADS=1 \
+  .venv/bin/python evaluate_sph_spill.py --station-export "$control" \
+  --scene-dir sph_pouring_trial/station_cache --output "${control}_sph"
+.venv/bin/python visualize_pour.py --fluid-output "${control}_sph" --no-robot
+```
+
+The controlled trajectory rotates the source around its mouth to 120° and holds it there. It bypasses robot grasping to isolate fluid outflow. The 3-second tube replay produced visible outflow and finished with 332 of 448 particles in the receiver, 116 outside both vessels, and zero in the source. These are provisional particle-center counts. `spill_report.json` marks spill measurement as unvalidated.
+
+### Evaluate a trajectory from your own Drake planner or ML script
+
+Use `TrajectoryRecorder` from `drake_trajectory_export.py`. After each simulator advance, record the measured vessel pose with `recorder.record(t, "source", X_WC)`, then save it as `candidate.csv`. Supply meters in the Z-up world frame, strictly increasing times starting at zero, and an identity initial rotation. If logging gripper poses, compose with the gripper-to-vessel transform first.
+
+```bash
+# Choose a matching geometry bundle, or supply your own cups.json.
+.venv/bin/python station_sph_export.py --controlled sph_pouring_trial/flask_geometry_01 --vessel erlenmeyer
+PYTHONPATH="$PWD/.venv/splishsplash/build/lib" OMP_NUM_THREADS=1 \
+  .venv/bin/python evaluate_sph_spill.py --trajectory candidate.csv \
+  --config sph_pouring_trial/flask_geometry_01/cups.json \
+  --scene-dir sph_pouring_trial/station_cache --output sph_pouring_trial/candidate_01
+.venv/bin/python visualize_pour.py --fluid-output sph_pouring_trial/candidate_01 --no-robot
+```
+
+Use the generated geometry only if the local vessel frame, source shape, receiver shape, and world receiver placement match your experiment. Edit `receiver_origin` for a different world placement. The upright stationary receiver uses the same bottom-center frame convention as the source. For cylindrical vessels use `source_cup` and `receiver_cup`. For other axisymmetric shapes use `source_profile` and/or `receiver_profile`. Each profile takes precedence over its corresponding cylinder dimensions and describes both the fluid boundary and classifier cavity. Arbitrary non-axisymmetric meshes are outside this interface.
+
+The following is an example profile configuration for a conical flask source and cylindrical default receiver. Each pair is `[z, radius]` in meters, ordered from base to rim. The outer wall starts at zero, the cavity floor is above it, and both profiles end at the same rim height. The inner wall must stay strictly within the outer wall and the complete initial fill box must fit in the cavity.
+
+```json
+{
+  "source_profile": {
+    "outer": [[0, 0.040], [0.006, 0.040], [0.080, 0.016], [0.160, 0.016]],
+    "inner": [[0.004, 0.037], [0.006, 0.037], [0.080, 0.013], [0.160, 0.013]]
+  },
+  "receiver_origin": [0.72, 0.14, 0.20],
+  "fill_start": [-0.014, -0.014, 0.010],
+  "fill_end": [0.014, 0.014, 0.045],
+  "particle_radius": 0.0015,
+  "max_time_step": 0.001
+}
+```
+
+In Python pass the same data as `config=PouringConfig(**geometry)` to `evaluate(recorder, config=...)` or use a CSV path. `VesselProfile` also accepts the two ring lists directly.
 
 ## Team and responsibilities
 
