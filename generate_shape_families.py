@@ -50,11 +50,11 @@ PROFILES = {
 
     # 5. Inverse Erlenmeyer:
     # Straight cylindrical bottom, flares outward at top
-    "inverted_taper": [
-        (0.00, 0.023),
-        (0.55, 0.023),
-        (0.86, 0.034),
-        (1.00, 0.034),
+    'inverted_taper': [
+        (0.00, 0.022),
+        (0.80, 0.022),
+        (0.92, 0.028),
+        (1.00, 0.028),
     ],
 
     # 6. Funnel:
@@ -173,6 +173,10 @@ def generate(family, name, height, mass, radius_scale):
       <collision name="collision_{i}">
         <pose>0 0 {z_offset:.9f} 0 0 0</pose>
         <geometry><mesh><uri>{uri}</uri><drake:declare_convex/></mesh></geometry>
+        <drake:proximity_properties>
+          <drake:mu_static>1.0</drake:mu_static>
+          <drake:mu_dynamic>1.0</drake:mu_dynamic>
+        </drake:proximity_properties>
       </collision>''')
     sdf.append('    </link>\n  </model>\n</sdf>\n')
     path = OUTPUT_DIR/f'{name}.sdf'
