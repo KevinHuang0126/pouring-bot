@@ -36,6 +36,34 @@ Open the Meshcat URL printed by the viewer. Playback loops until you press Ctrl+
 
 The viewer reads the actual VTK particle positions in world coordinates and uses the applied source pose recorded alongside each frame. The robot uses the iiwa7 model and wrist mounting from the existing grasping and pouring stations. Its joint poses are solved kinematically from the cup pose. The playback does not reconstruct the original station's joint commands, contact forces, or grasp dynamics. If a custom motion is outside the demo robot's reach, use `--no-robot` for cup and fluid playback. For older VTK exports, frame times are estimated from the scene's export FPS. Use `--scene path/to/scene_animated.json` if the original scene sits outside the run directory.
 
+### Run the robot planner and replay its measured vessel motion
+
+After the SPH setup above, install the Drake station helper package. The station and viewer start local Meshcat servers.
+
+```bash
+.venv/bin/python -m pip install 'manipulation==2026.10.17'
+run_dir=sph_pouring_trial/station_run_01
+OMP_NUM_THREADS=1 .venv/bin/python visualize_station.py --export-dir "$run_dir"
+
+PYTHONPATH="$PWD/.venv/splishsplash/build/lib" OMP_NUM_THREADS=1 \
+  .venv/bin/python evaluate_sph_spill.py \
+  --station-export "$run_dir" \
+  --scene-dir sph_pouring_trial/station_cache \
+  --output sph_pouring_trial/station_sph_01
+
+.venv/bin/python visualize_pour.py \
+  --trajectory "$run_dir/source_trajectory.csv" \
+  --fluid-output sph_pouring_trial/station_sph_01 --no-robot
+```
+
+Open the viewer's printed Meshcat URL. Use new directories for both the station export and the evaluation output each time. The evaluation command uses the patched project-local bindings and reads `cups.json` alongside the measured CSV. For a startup smoke check, add `--duration 0.4` to the evaluation command and use a separate output directory. Omit the duration to include the tilt and return. Add `--settle-duration 0.2` to let the initial fill settle while holding the first pose.
+
+The export uses the test tube at world XY `[0.42, -0.16]` and the known position as the grasp planner input. Add `--randomize-position` to vary the tube position. Run the station without `--export-dir` for the original camera-guided and randomized vessel workflow.
+
+The recorder samples the simulated tube body after simulator advances, starting at exactly zero before the approach. Its frame is at the outer bottom center, with identity initial rotation. The CSV covers approach, closure, lift, transport, tilt, and return. SPH creates the initial fill at rest in the upright tube. There is no earlier liquid state to carry over. Drake executes the grasp with dry contact dynamics and uses its reduced-order fluid model for aiming and flow estimates. SPH replays the measured motion one way with its own fill and spill results. The station export uses a 1 ms timestep cap because the demo timestep allowed fluid to eject during lift in this narrow tube.
+
+The station export generates the same hollow tube and beaker meshes used by SPH. Drake uses the hollow meshes for display and the original solid cylinders for rigid contact. The receiver's bottom center is read from the welded Drake body at world XYZ `[0.72, 0.14, 0.20]` m. The station viewer command shows the measured cup motion and SPH particles. The optional robot in the demo viewer uses inverse kinematics, so its joint poses can differ from the executed robot motion.
+
 ### Supply your own Drake vessel trajectory
 
 Use `TrajectoryRecorder` from `drake_trajectory_export.py`. At each Drake sample, record the held vessel's world pose with `recorder.record(t, "source", X_WC)`, then call `recorder.save("candidate.csv")`. Use the cup bottom center as the pose origin, meters, Z up, and strictly increasing timestamps beginning at zero. If the robot logs gripper poses, compose each with the fixed gripper-to-cup transform to obtain `X_WC`. The generated initial fill expects an identity initial cup rotation. Pass the same CSV to the evaluator and the viewer. Use the configuration fields below to match the cup dimensions, receiver placement, and fill to your setup.
@@ -89,7 +117,9 @@ print(result["collected_fraction"], result["remaining_fraction"], result["outsid
   "receiver_cup": [0.060, 0.004, 0.120, 0.004],
   "receiver_origin": [0.110, 0, 0],
   "fill_start": [-0.022, -0.022, 0.012],
-  "fill_end": [0.022, 0.022, 0.080]
+  "fill_end": [0.022, 0.022, 0.080],
+  "particle_radius": 0.003,
+  "max_time_step": null
 }
 ```
 

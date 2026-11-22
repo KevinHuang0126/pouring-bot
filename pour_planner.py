@@ -135,7 +135,7 @@ def check_grasp(plant, plant_context, vessel_body, X_GV_reference):
 
 def command_cartesian_motion(simulator, station, station_context, plant, plant_context,
         meshcat, vessel_body, vessel_name, X_GV, pose_function, duration, phase_name,
-        fluid, settle_duration=SETTLE_DURATION, stop_when_empty=False):
+        fluid, settle_duration=SETTLE_DURATION, stop_when_empty=False, record_pose=None):
     """Track a desired vessel pose with the existing damped differential IK."""
     iiwa = plant.GetModelInstanceByName('iiwa')
     wsg = plant.GetModelInstanceByName('wsg')
@@ -180,6 +180,8 @@ def command_cartesian_motion(simulator, station, station_context, plant, plant_c
         q_command = np.clip(q_actual + dt*qdot, joint_lower + 1e-4, joint_upper - 1e-4)
         position_port.FixValue(station_context, q_command)
         simulator.AdvanceTo(start_time + i*dt)
+        if record_pose is not None:
+            record_pose()
 
         # Advance even on the last interval before a slip abort.
         result = advance_fluid(meshcat, plant, plant_context, vessel_body, vessel_name, fluid, dt)
@@ -227,7 +229,8 @@ def command_cartesian_motion(simulator, station, station_context, plant, plant_c
     return True
 
 
-def execute_pour(simulator, station, station_context, plant, plant_context, meshcat, vessel_body, vessel_name):
+def execute_pour(simulator, station, station_context, plant, plant_context, meshcat, vessel_body, vessel_name,
+                 *, record_pose=None):
     """Run all pouring phases; return motion success as before, not transfer success."""
     vessel_spec = VESSELS[vessel_name]
     fluid = create_fluid_state(vessel_name, FILL_FRACTION)
@@ -257,7 +260,8 @@ def execute_pour(simulator, station, station_context, plant, plant_context, mesh
     def run_motion(pose_function, duration, phase_name, settle_duration=SETTLE_DURATION, stop_when_empty=False):
         ok = command_cartesian_motion(simulator, station, station_context, plant, plant_context,
             meshcat, vessel_body, vessel_name, X_GV, pose_function, duration, phase_name,
-            fluid, settle_duration=settle_duration, stop_when_empty=stop_when_empty)
+            fluid, settle_duration=settle_duration, stop_when_empty=stop_when_empty,
+            record_pose=record_pose)
         if not ok:
             print('\nPartial fluid results (motion aborted):')
             print_fluid_summary(fluid)

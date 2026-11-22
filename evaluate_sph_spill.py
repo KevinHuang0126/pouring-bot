@@ -141,7 +141,12 @@ def evaluate(
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--trajectory", type=Path, required=True)
+    inputs = parser.add_mutually_exclusive_group(required=True)
+    inputs.add_argument("--trajectory", type=Path)
+    inputs.add_argument(
+        "--station-export", type=Path,
+        help="Directory exported by visualize_station.py, including its cup configuration",
+    )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
         "--scene-dir", type=Path,
@@ -159,12 +164,19 @@ def main():
     parser.add_argument("--hold-source", action="store_true", help="Run a fixed-vessel control")
     parser.add_argument("--config", type=Path, help="JSON cup and fill overrides")
     args = parser.parse_args()
+    if args.station_export is not None and args.config is not None:
+        parser.error("--station-export uses the cup configuration from Drake")
+    trajectory = args.trajectory
+    config_path = args.config
+    if args.station_export is not None:
+        trajectory = args.station_export / "source_trajectory.csv"
+        config_path = args.station_export / "cups.json"
     try:
-        config = DEFAULT_CONFIG if args.config is None else PouringConfig(
-            **json.loads(args.config.read_text())
+        config = DEFAULT_CONFIG if config_path is None else PouringConfig(
+            **json.loads(config_path.read_text())
         )
         report = evaluate(
-            args.trajectory, args.output, args.scene_dir, args.template, args.duration,
+            trajectory, args.output, args.scene_dir, args.template, args.duration,
             hold_source=args.hold_source, settle_duration=args.settle_duration, config=config,
         )
     except (ValueError, TypeError, OSError) as exc:

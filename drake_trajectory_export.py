@@ -25,7 +25,7 @@ class TrajectoryRecorder:
         Args:
             time_s: Simulation time in seconds.
             body: Unique rigid-body name.
-            pose: Drake RigidTransform, world-to-body pose X_WB.
+            pose: Drake RigidTransform, pose X_WB mapping body coordinates into world coordinates.
         """
         position = np.asarray(pose.translation(), dtype=float)
         quat = pose.rotation().ToQuaternion()

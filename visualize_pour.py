@@ -140,7 +140,13 @@ def play(trajectory, output, scene_path, *, no_robot=False, once=False):
         hold_source = False
     poses = source_poses(trajectory, [0 if hold_source else frame[1] for frame in frames])
     meshcat = Meshcat()
-    meshcat.SetCameraPose([0.75, -1.10, 0.65], [-0.17, -0.12, 0.12])
+    if no_robot:
+        target = (poses[0][1] + np.asarray(scene["RigidBodies"][1]["translation"])) / 2
+        target[2] += 0.09
+        meshcat.SetCameraPose(target + [0.40, -0.60, 0.28], target)
+    else:
+        meshcat.SetCameraPose([0.75, -1.10, 0.65], [-0.17, -0.12, 0.12])
+    point_size = 3 * scene["Configuration"].get("particleRadius", 0.003)
     cup_meshes = []
     for name, body, color in zip(
         ("source", "receiver"), scene["RigidBodies"],
@@ -184,7 +190,7 @@ def play(trajectory, output, scene_path, *, no_robot=False, once=False):
             meshcat.SetTransform("/cups/source", RigidTransform(RotationMatrix(rotation), origin))
             cloud = PointCloud(xyz.shape[1])
             cloud.mutable_xyzs()[:] = xyz
-            meshcat.SetObject("/fluid", cloud, point_size=0.009, rgba=Rgba(0.07, 0.48, 0.95))
+            meshcat.SetObject("/fluid", cloud, point_size=point_size, rgba=Rgba(0.07, 0.48, 0.95))
             if robot:
                 plant, diagram, context, plant_context, joints = robot
                 context.SetTime(pose_time)

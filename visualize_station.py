@@ -14,6 +14,7 @@ Run:
     python visualize_station.py
 """
 
+import argparse
 from pathlib import Path
 
 import numpy as np
@@ -155,6 +156,9 @@ def scenario_text(
     vessel_name: str,
     source_x: float,
     source_y: float,
+    *,
+    source_model=None,
+    receiver_model=None,
 ) -> str:
     """
     Construct the workstation.
@@ -173,6 +177,8 @@ def scenario_text(
             f"Unknown source vessel: {vessel_name}"
         )
 
+    source_model = source_model or f"package://pouring_bot/{vessel_name}.sdf"
+    receiver_model = receiver_model or "package://pouring_bot/beaker.sdf"
     return f"""
 directives:
 - add_model:
@@ -224,11 +230,11 @@ directives:
 
 - add_model:
     name: {vessel_name}
-    file: package://pouring_bot/{vessel_name}.sdf
+    file: "{source_model}"
 
 - add_model:
     name: beaker
-    file: package://pouring_bot/beaker.sdf
+    file: "{receiver_model}"
 
 - add_weld:
     parent: world
@@ -472,6 +478,7 @@ def command_joint_motion(
     start_time,
     duration,
     steps,
+    record_pose=None,
 ):
     """Command smooth joint-space motion."""
 
@@ -501,6 +508,8 @@ def command_joint_motion(
             start_time
             + duration * s
         )
+        if record_pose is not None:
+            record_pose()
 
 
 # ==================================================
@@ -517,6 +526,7 @@ def command_cartesian_lift(
     gripper_frame,
     p_WG_start,
     start_time,
+    record_pose=None,
 ):
     """
     Lift in world Z using the gripper Jacobian.
@@ -668,6 +678,8 @@ def command_cartesian_lift(
             start_time
             + i * dt
         )
+        if record_pose is not None:
+            record_pose()
 
 
 # ==================================================
@@ -684,6 +696,7 @@ def localize_source_vessel(
     meshcat,
     source_x,
     source_y,
+    use_camera,
 ):
     """
     Determine the initial grasp location.
@@ -708,7 +721,7 @@ def localize_source_vessel(
     # CAMERA-BASED LOCALIZATION
     # ----------------------------------------------
 
-    if USE_CAMERA_LOCALIZATION:
+    if use_camera:
 
         print(
             "\nUsing camera-based "
@@ -845,12 +858,30 @@ def localize_source_vessel(
 # ==================================================
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--export-dir", type=Path, help="Export measured poses and matched SPH config")
+    parser.add_argument("--randomize-position", action="store_true", help="Randomize source position")
+    args = parser.parse_args()
+    exporting = args.export_dir is not None
+    if exporting and PERCEPTION_ONLY:
+        parser.error("Pose export requires motion. Set PERCEPTION_ONLY = False.")
+    use_camera = USE_CAMERA_LOCALIZATION and not exporting
+    randomize_position = args.randomize_position or (RANDOMIZE_POSITION and not exporting)
+    randomize_vessel = RANDOMIZE_VESSEL and not exporting
+    capture = None
+    if exporting:
+        from station_sph_export import StationSphExport
+
+        capture = StationSphExport(args.export_dir, PACKAGE_XML.parent)
+    record_pose = capture.record_pose if capture else None
 
     # ----------------------------------------------
     # GENERATE REPRODUCIBLE SCENARIO
     # ----------------------------------------------
 
-    if RANDOM_SEED is None:
+    if exporting and not randomize_position:
+        seed = 0
+    elif RANDOM_SEED is None:
 
         seed = int(
             np.random.SeedSequence()
@@ -869,7 +900,7 @@ def main():
     # SELECT VESSEL GEOMETRY
     # ----------------------------------------------
 
-    if RANDOMIZE_VESSEL:
+    if randomize_vessel:
 
         vessel_name = str(
             rng.choice(VESSELS)
@@ -877,7 +908,7 @@ def main():
 
     else:
 
-        vessel_name = FIXED_VESSEL
+        vessel_name = "test_tube" if exporting else FIXED_VESSEL
 
     # ----------------------------------------------
     # SELECT SOURCE POSITION
@@ -889,7 +920,7 @@ def main():
     # the environment, but is not provided
     # to the camera-based grasp planner.
 
-    if RANDOMIZE_POSITION:
+    if randomize_position:
 
         source_x, source_y = (
             choose_source_position(rng)
@@ -918,12 +949,12 @@ def main():
 
     print(
         "Randomize position:",
-        RANDOMIZE_POSITION,
+        randomize_position,
     )
 
     print(
         "Randomize vessel:",
-        RANDOMIZE_VESSEL,
+        randomize_vessel,
     )
 
     print(
@@ -952,7 +983,7 @@ def main():
 
     print(
         "Use camera localization:",
-        USE_CAMERA_LOCALIZATION,
+        use_camera,
     )
 
     print(
@@ -980,10 +1011,12 @@ def main():
         vessel_name,
         source_x,
         source_y,
+        source_model=capture.source_model if capture else None,
+        receiver_model=capture.receiver_model if capture else None,
     )
 
     # Append the fixed overhead RGB-D camera.
-    if USE_CAMERA_LOCALIZATION:
+    if use_camera:
 
         scenario_data += (
             camera_config_yaml()
@@ -1131,10 +1164,14 @@ def main():
     # ----------------------------------------------
 
     simulator.set_target_realtime_rate(
-        1.0
+        0.0 if exporting else 1.0
     )
 
     simulator.Initialize()
+    if capture:
+        simulator.AdvanceTo(context.get_time())
+        receiver = plant.GetBodyByName("body", plant.GetModelInstanceByName("beaker"))
+        capture.start(simulator, plant, plant_context, vessel_body, receiver)
 
     diagram.ForcedPublish(
         context
@@ -1149,7 +1186,7 @@ def main():
         station
     )
 
-    if USE_CAMERA_LOCALIZATION:
+    if use_camera:
 
         print_camera_output_ports(
             station
@@ -1177,6 +1214,7 @@ def main():
                 meshcat=meshcat,
                 source_x=source_x,
                 source_y=source_y,
+                use_camera=use_camera,
             )
         )
 
@@ -1197,16 +1235,15 @@ def main():
             "Robot motion skipped."
         )
 
-        if USE_CAMERA_LOCALIZATION:
+        if use_camera:
 
             print_camera_output_ports(
                 station
             )
 
-        input(
-            "\nPress Enter to close."
-        )
-
+        if exporting:
+            raise
+        input("\nPress Enter to close.")
         return
 
     # ----------------------------------------------
@@ -1234,7 +1271,7 @@ def main():
             f"{1000.0 * localization_error:.2f} mm"
         )
 
-        if USE_CAMERA_LOCALIZATION:
+        if use_camera:
 
             print(
                 "\nRed marker: "
@@ -1335,6 +1372,7 @@ def main():
             start_time=approach_start,
             duration=APPROACH_DURATION,
             steps=50,
+            record_pose=record_pose,
         )
 
         q_actual = plant.GetPositions(
@@ -1399,9 +1437,12 @@ def main():
             + CLOSE_DURATION
         )
 
-        simulator.AdvanceTo(
-            close_end
-        )
+        if capture:
+            for time in np.linspace(context.get_time(), close_end, 101)[1:]:
+                simulator.AdvanceTo(time)
+                record_pose()
+        else:
+            simulator.AdvanceTo(close_end)
 
         # ------------------------------------------
         # GRIPPER POSITION AND FORCE
@@ -1504,6 +1545,7 @@ def main():
                 X_WG.translation().copy()
             ),
             start_time=close_end,
+            record_pose=record_pose,
         )
 
         # ==========================================
@@ -1599,6 +1641,7 @@ def main():
                 meshcat=meshcat,
                 vessel_body=vessel_body,
                 vessel_name=vessel_name,
+                record_pose=record_pose,
             )
 
             print_gripper_force(
@@ -1663,7 +1706,7 @@ def main():
 
     print(
         "Camera localization enabled:",
-        USE_CAMERA_LOCALIZATION,
+        use_camera,
     )
 
     print(
@@ -1706,9 +1749,12 @@ def main():
 
     print("=" * 55)
 
-    input(
-        "\nPress Enter to close."
-    )
+    if capture:
+        if not pour_success:
+            raise RuntimeError("Station motion aborted before completing the pour")
+        capture.save()
+    else:
+        input("\nPress Enter to close.")
 
 
 if __name__ == "__main__":

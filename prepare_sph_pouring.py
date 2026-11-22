@@ -31,6 +31,9 @@ class PouringConfig:
     fill_start: tuple[float, float, float] = (-0.022, -0.022, 0.012)
     fill_end: tuple[float, float, float] = (0.022, 0.022, 0.080)
 
+    particle_radius: float = PARTICLE_RADIUS
+    max_time_step: float | None = None
+
     def __post_init__(self):
         for name, size in (("source_cup", 4), ("receiver_cup", 4),
                            ("receiver_origin", 3), ("fill_start", 3), ("fill_end", 3)):
@@ -43,8 +46,18 @@ class PouringConfig:
             if min(cup) <= 0 or cup[3] >= cup[2]:
                 raise ValueError("Cup dimensions must be positive with base thickness below rim height")
 
+        radius = float(self.particle_radius)
+        if not math.isfinite(radius) or radius <= 0:
+            raise ValueError("Particle radius must be positive and finite")
+        object.__setattr__(self, "particle_radius", radius)
+        if self.max_time_step is not None:
+            step = float(self.max_time_step)
+            if not math.isfinite(step) or step <= 0:
+                raise ValueError("Maximum time step must be positive and finite")
+            object.__setattr__(self, "max_time_step", step)
+
         # Cubic sampling needs round(extent / particle diameter) >= 3 per axis.
-        min_extent = 5 * PARTICLE_RADIUS
+        min_extent = 5 * radius
         if any(hi - lo <= min_extent for lo, hi in zip(self.fill_start, self.fill_end)):
             raise ValueError(f"Initial fill must span over {min_extent:g} m on each axis")
         radius, _, height, bottom = self.source_cup
@@ -123,10 +136,13 @@ def prepare_scene(trajectory, output, template, *, settings=DEFAULT_CONFIG):
     receiver_mesh = write_cup(output, "receiver", settings.receiver_cup, DEFAULT_CONFIG.receiver_cup)
     template = json.loads(Path(template).read_text())
     config = template['Configuration']
-    config.update({'particleRadius': PARTICLE_RADIUS, 'gravitation': [0,0,-9.81],
+    config.update({'particleRadius': settings.particle_radius, 'gravitation': [0,0,-9.81],
                    'boundaryHandlingMethod': 2,  # Bender2019 volume maps
                    'enableVTKExport': True, 'dataExportFPS': 30.0,
                    'particleAttributes': 'velocity;density'})
+    if settings.max_time_step is not None:
+        config['timeStepSize'] = settings.max_time_step
+        config['cflMaxTimeStepSize'] = settings.max_time_step
     first = source[0]
     origin = [float(first[k]) for k in ('x_m','y_m','z_m')]
     config['cameraPosition'] = [0.4, -0.5, 0.35]
