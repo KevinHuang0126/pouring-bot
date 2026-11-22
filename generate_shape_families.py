@@ -29,15 +29,16 @@ PROFILES = {
         (1.00, 0.014),
     ],
 
-    # 3. Round-bottom flask
+    # Rounded body with a longer, narrower cylindrical neck
+
     "round_bottom": [
-        (0.00, 0.012),
-        (0.10, 0.024),
-        (0.28, 0.035),
-        (0.48, 0.036),
-        (0.68, 0.027),
-        (0.76, 0.013),
-        (1.00, 0.013),
+        (0.00, 0.018),
+        (0.12, 0.027),
+        (0.30, 0.032),
+        (0.48, 0.032),
+        (0.60, 0.026),
+        (0.68, 0.023),
+        (1.00, 0.023),
     ],
 
     # 4. Shouldered bottle
@@ -66,14 +67,13 @@ PROFILES = {
         (1.00, 0.037),
     ],
 
-    # 7. Goblet:
-    # Cylindrical lower body with expanding upper bowl
+    # Goblet:
+    # Long straight lower section with a gentler upper flare
     "goblet": [
         (0.00, 0.022),
-        (0.48, 0.022),
-        (0.68, 0.032),
-        (0.88, 0.036),
-        (1.00, 0.036),
+        (0.65, 0.022),
+        (0.82, 0.028),
+        (1.00, 0.028),
     ],
 
     # 8. Flared rim:
