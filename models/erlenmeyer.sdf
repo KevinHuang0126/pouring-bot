@@ -1,5 +1,5 @@
 <?xml version="1.0"?>
-<sdf version="1.7">
+<sdf version="1.7" xmlns:drake="drake.mit.edu">
   <model name="erlenmeyer">
     <!-- Link origin is the bottom. Base cylinder then a narrower neck. -->
     <link name="body">
@@ -24,6 +24,11 @@
         <geometry>
           <cylinder><radius>0.040</radius><length>0.08</length></cylinder>
         </geometry>
+      
+        <drake:proximity_properties>
+          <drake:mu_static>1.0</drake:mu_static>
+          <drake:mu_dynamic>1.0</drake:mu_dynamic>
+        </drake:proximity_properties>
       </collision>
       <visual name="neck">
         <pose>0 0 0.12 0 0 0</pose>
@@ -37,6 +42,11 @@
         <geometry>
           <cylinder><radius>0.016</radius><length>0.08</length></cylinder>
         </geometry>
+      
+        <drake:proximity_properties>
+          <drake:mu_static>1.0</drake:mu_static>
+          <drake:mu_dynamic>1.0</drake:mu_dynamic>
+        </drake:proximity_properties>
       </collision>
     </link>
   </model>

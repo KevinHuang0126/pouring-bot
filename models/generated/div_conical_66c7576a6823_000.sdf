@@ -1,0 +1,40 @@
+<?xml version="1.0"?>
+<sdf version="1.7" xmlns:drake="http://drake.mit.edu">
+  <model name="div_conical_66c7576a6823_000">
+    <link name="body">
+      <inertial>
+        <pose>0 0 0.044280567 0 0 0</pose>
+        <mass>0.062631752</mass>
+        <inertia>
+          <ixx>0.000093312523</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>0.000093312523</iyy><iyz>0</iyz><izz>0.000026184969</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual_0">
+        <pose>0 0 0.000000000 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/div_conical_66c7576a6823_000_part_00.obj</uri></mesh></geometry>
+        <material><diffuse>0.65 0.90 0.98 0.55</diffuse></material>
+      </visual>
+      <collision name="collision_0">
+        <pose>0 0 0.000000000 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/div_conical_66c7576a6823_000_part_00.obj</uri><drake:declare_convex/></mesh></geometry>
+        <drake:proximity_properties>
+          <drake:mu_static>1.0</drake:mu_static>
+          <drake:mu_dynamic>1.0</drake:mu_dynamic>
+        </drake:proximity_properties>
+      </collision>
+      <visual name="visual_1">
+        <pose>0 0 0.103152308 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/div_conical_66c7576a6823_000_part_01.obj</uri></mesh></geometry>
+        <material><diffuse>0.65 0.90 0.98 0.55</diffuse></material>
+      </visual>
+      <collision name="collision_1">
+        <pose>0 0 0.103152308 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/div_conical_66c7576a6823_000_part_01.obj</uri><drake:declare_convex/></mesh></geometry>
+        <drake:proximity_properties>
+          <drake:mu_static>1.0</drake:mu_static>
+          <drake:mu_dynamic>1.0</drake:mu_dynamic>
+        </drake:proximity_properties>
+      </collision>    </link>
+  </model>
+</sdf>

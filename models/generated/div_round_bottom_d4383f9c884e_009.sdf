@@ -1,0 +1,92 @@
+<?xml version="1.0"?>
+<sdf version="1.7" xmlns:drake="http://drake.mit.edu">
+  <model name="div_round_bottom_d4383f9c884e_009">
+    <link name="body">
+      <inertial>
+        <pose>0 0 0.076683879 0 0 0</pose>
+        <mass>0.054728630</mass>
+        <inertia>
+          <ixx>0.000094097976</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>0.000094097976</iyy><iyz>0</iyz><izz>0.000017331554</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual_0">
+        <pose>0 0 0.000000000 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/div_round_bottom_d4383f9c884e_009_part_00.obj</uri></mesh></geometry>
+        <material><diffuse>0.65 0.90 0.98 0.55</diffuse></material>
+      </visual>
+      <collision name="collision_0">
+        <pose>0 0 0.000000000 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/div_round_bottom_d4383f9c884e_009_part_00.obj</uri><drake:declare_convex/></mesh></geometry>
+        <drake:proximity_properties>
+          <drake:mu_static>1.0</drake:mu_static>
+          <drake:mu_dynamic>1.0</drake:mu_dynamic>
+        </drake:proximity_properties>
+      </collision>
+      <visual name="visual_1">
+        <pose>0 0 0.030965864 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/div_round_bottom_d4383f9c884e_009_part_01.obj</uri></mesh></geometry>
+        <material><diffuse>0.65 0.90 0.98 0.55</diffuse></material>
+      </visual>
+      <collision name="collision_1">
+        <pose>0 0 0.030965864 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/div_round_bottom_d4383f9c884e_009_part_01.obj</uri><drake:declare_convex/></mesh></geometry>
+        <drake:proximity_properties>
+          <drake:mu_static>1.0</drake:mu_static>
+          <drake:mu_dynamic>1.0</drake:mu_dynamic>
+        </drake:proximity_properties>
+      </collision>
+      <visual name="visual_2">
+        <pose>0 0 0.047284002 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/div_round_bottom_d4383f9c884e_009_part_02.obj</uri></mesh></geometry>
+        <material><diffuse>0.65 0.90 0.98 0.55</diffuse></material>
+      </visual>
+      <collision name="collision_2">
+        <pose>0 0 0.047284002 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/div_round_bottom_d4383f9c884e_009_part_02.obj</uri><drake:declare_convex/></mesh></geometry>
+        <drake:proximity_properties>
+          <drake:mu_static>1.0</drake:mu_static>
+          <drake:mu_dynamic>1.0</drake:mu_dynamic>
+        </drake:proximity_properties>
+      </collision>
+      <visual name="visual_3">
+        <pose>0 0 0.083051762 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/div_round_bottom_d4383f9c884e_009_part_03.obj</uri></mesh></geometry>
+        <material><diffuse>0.65 0.90 0.98 0.55</diffuse></material>
+      </visual>
+      <collision name="collision_3">
+        <pose>0 0 0.083051762 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/div_round_bottom_d4383f9c884e_009_part_03.obj</uri><drake:declare_convex/></mesh></geometry>
+        <drake:proximity_properties>
+          <drake:mu_static>1.0</drake:mu_static>
+          <drake:mu_dynamic>1.0</drake:mu_dynamic>
+        </drake:proximity_properties>
+      </collision>
+      <visual name="visual_4">
+        <pose>0 0 0.089117004 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/div_round_bottom_d4383f9c884e_009_part_04.obj</uri></mesh></geometry>
+        <material><diffuse>0.65 0.90 0.98 0.55</diffuse></material>
+      </visual>
+      <collision name="collision_4">
+        <pose>0 0 0.089117004 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/div_round_bottom_d4383f9c884e_009_part_04.obj</uri><drake:declare_convex/></mesh></geometry>
+        <drake:proximity_properties>
+          <drake:mu_static>1.0</drake:mu_static>
+          <drake:mu_dynamic>1.0</drake:mu_dynamic>
+        </drake:proximity_properties>
+      </collision>
+      <visual name="visual_5">
+        <pose>0 0 0.109026995 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/div_round_bottom_d4383f9c884e_009_part_05.obj</uri></mesh></geometry>
+        <material><diffuse>0.65 0.90 0.98 0.55</diffuse></material>
+      </visual>
+      <collision name="collision_5">
+        <pose>0 0 0.109026995 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/div_round_bottom_d4383f9c884e_009_part_05.obj</uri><drake:declare_convex/></mesh></geometry>
+        <drake:proximity_properties>
+          <drake:mu_static>1.0</drake:mu_static>
+          <drake:mu_dynamic>1.0</drake:mu_dynamic>
+        </drake:proximity_properties>
+      </collision>    </link>
+  </model>
+</sdf>

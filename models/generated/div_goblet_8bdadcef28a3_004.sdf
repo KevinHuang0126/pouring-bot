@@ -1,0 +1,53 @@
+<?xml version="1.0"?>
+<sdf version="1.7" xmlns:drake="http://drake.mit.edu">
+  <model name="div_goblet_8bdadcef28a3_004">
+    <link name="body">
+      <inertial>
+        <pose>0 0 0.081769226 0 0 0</pose>
+        <mass>0.059758586</mass>
+        <inertia>
+          <ixx>0.000123189172</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>0.000123189172</iyy><iyz>0</iyz><izz>0.000022602318</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual_0">
+        <pose>0 0 0.000000000 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/div_goblet_8bdadcef28a3_004_part_00.obj</uri></mesh></geometry>
+        <material><diffuse>0.65 0.90 0.98 0.55</diffuse></material>
+      </visual>
+      <collision name="collision_0">
+        <pose>0 0 0.000000000 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/div_goblet_8bdadcef28a3_004_part_00.obj</uri><drake:declare_convex/></mesh></geometry>
+        <drake:proximity_properties>
+          <drake:mu_static>1.0</drake:mu_static>
+          <drake:mu_dynamic>1.0</drake:mu_dynamic>
+        </drake:proximity_properties>
+      </collision>
+      <visual name="visual_1">
+        <pose>0 0 0.085017579 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/div_goblet_8bdadcef28a3_004_part_01.obj</uri></mesh></geometry>
+        <material><diffuse>0.65 0.90 0.98 0.55</diffuse></material>
+      </visual>
+      <collision name="collision_1">
+        <pose>0 0 0.085017579 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/div_goblet_8bdadcef28a3_004_part_01.obj</uri><drake:declare_convex/></mesh></geometry>
+        <drake:proximity_properties>
+          <drake:mu_static>1.0</drake:mu_static>
+          <drake:mu_dynamic>1.0</drake:mu_dynamic>
+        </drake:proximity_properties>
+      </collision>
+      <visual name="visual_2">
+        <pose>0 0 0.122088443 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/div_goblet_8bdadcef28a3_004_part_02.obj</uri></mesh></geometry>
+        <material><diffuse>0.65 0.90 0.98 0.55</diffuse></material>
+      </visual>
+      <collision name="collision_2">
+        <pose>0 0 0.122088443 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/div_goblet_8bdadcef28a3_004_part_02.obj</uri><drake:declare_convex/></mesh></geometry>
+        <drake:proximity_properties>
+          <drake:mu_static>1.0</drake:mu_static>
+          <drake:mu_dynamic>1.0</drake:mu_dynamic>
+        </drake:proximity_properties>
+      </collision>    </link>
+  </model>
+</sdf>

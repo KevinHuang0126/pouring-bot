@@ -1,0 +1,68 @@
+<?xml version="1.0"?>
+<sdf version="1.7" xmlns:drake="http://drake.mit.edu">
+  <model name="ml_shape_round_bottom_4210_000">
+    <link name="body">
+      <inertial>
+        <pose>0 0 0.063379797 0 0 0</pose>
+        <mass>0.120000000</mass>
+        <inertia>
+          <ixx>0.000143724654</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>0.000143724654</iyy><iyz>0</iyz><izz>0.000058868139</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual_0">
+        <pose>0 0 0.000000000 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/ml_shape_round_bottom_4210_000_part_00.obj</uri></mesh></geometry>
+        <material><diffuse>0.65 0.90 0.98 0.55</diffuse></material>
+      </visual>
+      <collision name="collision_0">
+        <pose>0 0 0.000000000 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/ml_shape_round_bottom_4210_000_part_00.obj</uri><drake:declare_convex/></mesh></geometry>
+      </collision>
+      <visual name="visual_1">
+        <pose>0 0 0.015000000 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/ml_shape_round_bottom_4210_000_part_01.obj</uri></mesh></geometry>
+        <material><diffuse>0.65 0.90 0.98 0.55</diffuse></material>
+      </visual>
+      <collision name="collision_1">
+        <pose>0 0 0.015000000 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/ml_shape_round_bottom_4210_000_part_01.obj</uri><drake:declare_convex/></mesh></geometry>
+      </collision>
+      <visual name="visual_2">
+        <pose>0 0 0.042000000 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/ml_shape_round_bottom_4210_000_part_02.obj</uri></mesh></geometry>
+        <material><diffuse>0.65 0.90 0.98 0.55</diffuse></material>
+      </visual>
+      <collision name="collision_2">
+        <pose>0 0 0.042000000 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/ml_shape_round_bottom_4210_000_part_02.obj</uri><drake:declare_convex/></mesh></geometry>
+      </collision>
+      <visual name="visual_3">
+        <pose>0 0 0.072000000 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/ml_shape_round_bottom_4210_000_part_03.obj</uri></mesh></geometry>
+        <material><diffuse>0.65 0.90 0.98 0.55</diffuse></material>
+      </visual>
+      <collision name="collision_3">
+        <pose>0 0 0.072000000 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/ml_shape_round_bottom_4210_000_part_03.obj</uri><drake:declare_convex/></mesh></geometry>
+      </collision>
+      <visual name="visual_4">
+        <pose>0 0 0.102000000 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/ml_shape_round_bottom_4210_000_part_04.obj</uri></mesh></geometry>
+        <material><diffuse>0.65 0.90 0.98 0.55</diffuse></material>
+      </visual>
+      <collision name="collision_4">
+        <pose>0 0 0.102000000 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/ml_shape_round_bottom_4210_000_part_04.obj</uri><drake:declare_convex/></mesh></geometry>
+      </collision>
+      <visual name="visual_5">
+        <pose>0 0 0.114000000 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/ml_shape_round_bottom_4210_000_part_05.obj</uri></mesh></geometry>
+        <material><diffuse>0.65 0.90 0.98 0.55</diffuse></material>
+      </visual>
+      <collision name="collision_5">
+        <pose>0 0 0.114000000 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/ml_shape_round_bottom_4210_000_part_05.obj</uri><drake:declare_convex/></mesh></geometry>
+      </collision>    </link>
+  </model>
+</sdf>

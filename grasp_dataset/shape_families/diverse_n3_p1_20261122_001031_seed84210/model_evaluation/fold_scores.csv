@@ -1,0 +1,4 @@
+fold,scenarios,model_success,fixed_success,oracle_success,fixed_fraction,classification_accuracy,balanced_accuracy,roc_auc
+0,8,8,3,8,0.8,0.725,0.7247474747474747,0.7853535353535354
+1,8,7,5,8,0.73,0.8,0.8184143222506394,0.9002557544757033
+2,8,6,4,7,0.6,0.675,0.6754385964912281,0.6967418546365916

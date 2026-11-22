@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<sdf version="1.7" xmlns:drake="http://drake.mit.edu">
+  <model name="ml_shape_funnel_4210_000">
+    <link name="body">
+      <inertial>
+        <pose>0 0 0.103864174 0 0 0</pose>
+        <mass>0.120000000</mass>
+        <inertia>
+          <ixx>0.000181819902</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>0.000181819902</iyy><iyz>0</iyz><izz>0.000051515913</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual_0">
+        <pose>0 0 0.000000000 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/ml_shape_funnel_4210_000_part_00.obj</uri></mesh></geometry>
+        <material><diffuse>0.65 0.90 0.98 0.55</diffuse></material>
+      </visual>
+      <collision name="collision_0">
+        <pose>0 0 0.000000000 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/ml_shape_funnel_4210_000_part_00.obj</uri><drake:declare_convex/></mesh></geometry>
+      </collision>
+      <visual name="visual_1">
+        <pose>0 0 0.027000000 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/ml_shape_funnel_4210_000_part_01.obj</uri></mesh></geometry>
+        <material><diffuse>0.65 0.90 0.98 0.55</diffuse></material>
+      </visual>
+      <collision name="collision_1">
+        <pose>0 0 0.027000000 0 0 0</pose>
+        <geometry><mesh><uri>package://pouring_bot/generated/ml_shape_funnel_4210_000_part_01.obj</uri><drake:declare_convex/></mesh></geometry>
+      </collision>    </link>
+  </model>
+</sdf>

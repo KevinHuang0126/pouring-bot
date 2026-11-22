@@ -1,0 +1,29 @@
+{
+  "scenarios": 24,
+  "ml_success": 13,
+  "fixed_success": 12,
+  "oracle_success": 22,
+  "family_count": 8,
+  "features": [
+    "height_m",
+    "mass_kg",
+    "com_height_m",
+    "max_diameter_m",
+    "grasp_fraction",
+    "grasp_height_m",
+    "local_radius_m",
+    "local_slope_dr_dz",
+    "grasp_minus_com_m",
+    "grasp_minus_com_over_height",
+    "local_diameter_over_max_diameter",
+    "radius_below_10mm_m",
+    "radius_above_10mm_m",
+    "slope_below_10mm",
+    "slope_above_10mm",
+    "base_radius_m",
+    "mouth_radius_m",
+    "height_over_max_diameter"
+  ],
+  "evaluation": "Leave-one-shape-family-out, same sampled candidate heights",
+  "caution": "Only 3 geometries per family; these are offline selections scored using existing Drake trials, not independently rerun robot rollouts."
+}
