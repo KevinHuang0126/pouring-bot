@@ -76,6 +76,31 @@ PYTHONPATH="$PWD/.venv/splishsplash/build/lib" OMP_NUM_THREADS=1 \
 
 The controlled trajectory rotates the source around its mouth to 120° and holds it there. It bypasses robot grasping to isolate fluid outflow. The 3-second tube replay produced visible outflow and finished with 332 of 448 particles in the receiver, 116 outside both vessels, and zero in the source. These are provisional particle-center counts. `spill_report.json` marks spill measurement as unvalidated.
 
+### Diagnose receiver impact and particle speeds
+
+Generate the 120° control above, then use the same bundle for stationary and moving runs. Reuse the cache and choose fresh output directories.
+
+```bash
+export PYTHONPATH="$PWD/.venv/splishsplash/build/lib"
+export OMP_NUM_THREADS=1
+control=sph_pouring_trial/control_120deg_01
+.venv/bin/python evaluate_sph_spill.py --station-export "$control" \
+  --scene-dir sph_pouring_trial/station_cache --diagnostics --hold-source \
+  --duration 0.6 --output sph_pouring_trial/diagnostic_fixed
+.venv/bin/python evaluate_sph_spill.py --station-export "$control" \
+  --scene-dir sph_pouring_trial/station_cache --diagnostics \
+  --duration 2.4 --output sph_pouring_trial/diagnostic_tilt
+.venv/bin/python visualize_pour.py --fluid-output sph_pouring_trial/diagnostic_tilt --no-robot
+```
+
+Repeat with an earlier template by adding `--template old_template.json`. To isolate the CFL change, copy `DoubleDamBreak_export.json` and set `Configuration.cflFactor` to `1` in the copy. For a measured station export, use its directory in `--station-export`. The first 8.7 seconds of the deterministic test-tube run include approach, closure, and moving lift.
+
+`step_diagnostics.csv` reports speeds, density, active particle count and boundary velocities on every solver step. Velocity changes follow particle IDs across native sorting. The largest change includes the nonpressure impulse and the vector residual from the other stages. The two magnitudes can oppose each other. Signed wall distance and the boundary density term are sampled at that particle's pre-step center. A blank distance means the particle is outside the map. A position residual beyond roundoff can indicate the solver's penetration fallback. The native binding does not accumulate reaction forces for the prescribed vessels.
+
+In the original 120° test, the first greater-than-1 m/s jump ended at 1.71684 s at the receiver floor. The particle center was 3.26 mm from the wall and the receiver map contributed about 304 kg/m³ to its density. There was no detectable penetration projection at that event. At the largest jump the receiver contributed 525 kg/m³, and the pressure-side residual was 3.28 m/s. The jump persisted with divergence disabled, implicating the density-pressure response to under-resolved receiver impact. The patched DFSPH step uses one timestep for both pressure solves and integration. The replay supplies world-frame rigid-body point velocities through `v + ω × (x − origin)`. The large jumps occurred at the stationary receiver when the source was slowing.
+
+The default template now uses a CFL factor of 0.125. At 2 m/s and a 3 mm particle diameter, the native bound requests a 0.075 ms step before the 0.1 ms solver floor, compared with 0.6 ms at factor 1. This resolves the impact across more pressure updates while retaining the existing implicit viscosity. The result is still sensitive to the timestep, map resolution, fill and aim. The replay has no ground boundary, so missed particles continue to accelerate under gravity below the workspace. The reported particle counts are provisional.
+
 ### Evaluate a trajectory from your own Drake planner or ML script
 
 Use `TrajectoryRecorder` from `drake_trajectory_export.py`. After each simulator advance, record the measured vessel pose with `recorder.record(t, "source", X_WC)`, then save it as `candidate.csv`. Supply meters in the Z-up world frame, strictly increasing times starting at zero, and an identity initial rotation. If logging gripper poses, compose with the gripper-to-vessel transform first.

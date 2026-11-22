@@ -101,12 +101,20 @@ class EvaluatorInterfaceTest(unittest.TestCase):
                 output = root / name
                 result = evaluate(
                     recorder, output=output, scene_dir=cache, config=config,
-                    settle_duration=0.2,
+                    settle_duration=0.2, diagnostics=(name == "second"),
                 )
                 self.assertEqual(result, json.loads((output / "spill_report.json").read_text()))
                 self.assertIs(result["spill_measurement_validated"], False)
                 self.assertEqual(result["requested_settle_duration_s"], 0.2)
                 self.assertEqual(binding.replay_scene.call_args.kwargs["settle_duration"], 0.2)
+                kwargs = binding.replay_scene.call_args.kwargs
+                if name == "second":
+                    self.assertTrue(kwargs["diagnostics"])
+                    center, contains = kwargs["diagnostic_receiver"]
+                    self.assertEqual(center, (0.2, 0.0, 0.0))
+                    self.assertTrue(contains(np.array([[0, 0, .05]]))[0])
+                else:
+                    self.assertNotIn("diagnostics", kwargs)
                 self.assertEqual(result["classification"], "final_particle_centers")
                 self.assertEqual(result["collected_fraction"], 0.25)
                 self.assertEqual(result["remaining_fraction"], 0.25)

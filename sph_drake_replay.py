@@ -130,7 +130,105 @@ def prepare_animated_scene(static_scene, output_scene):
         json.dump(scene, f, indent=2)
 
 
-def replay_scene(scene_path, replay, duration, output, *, settle_duration=0.0, on_step=None):
+class StepDiagnostics:
+    """Trace the fastest changes by particle ID across neighbor sorting."""
+
+    def __init__(self, path):
+        self.path = path
+        self.previous = {}
+        self.rows = []
+
+    def sample(self, simulation, source_time, start, end, source, receiver):
+        dt = end - start
+        snapshots = {}
+        speed = []
+        workspace_speed = []
+        receiver_speed = []
+        density = []
+        strongest = (-1.,)
+        impact = None
+        max_projection = 0.
+        for j in range(simulation.numberOfFluidModels()):
+            model = simulation.getFluidModel(j)
+            if not model.numActiveParticles():
+                continue
+            indices = range(model.numActiveParticles())
+            ids = [(j, model.getParticleId(i)) for i in indices]
+            p = np.array([model.getPosition(i) for i in indices])
+            v = np.array([model.getVelocity(i) for i in indices])
+            a = np.array([model.getAcceleration(i) for i in indices])
+            rho = np.array([model.getDensity(i) for i in indices])
+            speeds = np.linalg.norm(v, axis=1)
+            speed.extend(speeds)
+            density.extend(rho)
+            workspace_speed.extend(speeds[p[:, 2] >= 0.])
+            if receiver is not None:
+                origin, contains = receiver
+                receiver_speed.extend(speeds[contains(p - origin)])
+            prior = np.array([self.previous.get(key, (pos - dt * vel, np.zeros(3)))
+                              for key, pos, vel in zip(ids, p, v)])
+            changes = np.linalg.norm(v - prior[:, 1], axis=1)
+            projection = np.linalg.norm(p - prior[:, 0] - dt * v, axis=1)
+            max_projection = max(max_projection, float(projection.max()))
+            k = int(changes.argmax())
+            if changes[k] > strongest[0]:
+                impact = (model, j, k, prior[k, 0])
+                strongest = (
+                    changes[k], ids[k][1], np.linalg.norm(dt * a[k]),
+                    np.linalg.norm(v[k] - prior[k, 1] - dt * a[k]),
+                    rho[k], projection[k], *p[k],
+                )
+            snapshots.update(zip(ids, zip(p, v)))
+        self.previous = snapshots
+        if impact is None:
+            raise RuntimeError("No active fluid particles to diagnose")
+        model, fluid_index, particle_index, prior_position = impact
+        wall_samples = {}
+        for i in range(simulation.numberOfBoundaryModels()):
+            boundary = simulation.getBoundaryModel(i)
+            rigid_body = boundary.getRigidBodyObject()
+            label = "source" if rigid_body.isAnimated() else "receiver"
+            local = Rotation.from_quat(rigid_body.getRotation()).inv().apply(
+                prior_position - rigid_body.getPosition()
+            )
+            distance = sph.Utilities.SDFFunctions.distance(boundary.getMap(), local, 0.)
+            if distance == np.finfo(float).max:
+                distance = None  # Outside the volume-map domain.
+            volume = boundary.getBoundaryVolume(fluid_index, particle_index)
+            sample = boundary.getBoundaryXj(fluid_index, particle_index)
+            contribution = model.getDensity0() * volume * simulation.W(prior_position - sample)
+            wall_samples[label] = (distance, contribution)
+        body = source.getRigidBodyObject()
+        self.rows.append((
+            start, end, source_time, len(speed), *np.percentile(speed, [50, 95, 99]),
+            max(speed), max(workspace_speed, default=0.), len(receiver_speed), max(receiver_speed, default=0.),
+            max(density), *strongest, max_projection,
+            *wall_samples["source"], *wall_samples["receiver"],
+            *body.getVelocity(), *body.getAngularVelocity(),
+        ))
+
+    def save(self):
+        with self.path.open("w", newline="") as stream:
+            writer = csv.writer(stream)
+            writer.writerow((
+                "step_start_s", "time_s", "source_pose_time_s", "particles",
+                "speed_p50_m_s", "speed_p95_m_s", "speed_p99_m_s", "speed_max_m_s",
+                "workspace_max_speed_m_s",
+                "receiver_particles", "receiver_max_speed_m_s", "density_max_kg_m3",
+                "max_delta_v_m_s", "max_delta_v_particle_id", "nonpressure_delta_v_m_s",
+                "residual_delta_v_m_s", "max_delta_v_density_kg_m3",
+                "max_delta_v_position_correction_m", "max_delta_v_x_m", "max_delta_v_y_m",
+                "max_delta_v_z_m", "max_position_correction_m",
+                "source_sdf_m", "source_boundary_density_kg_m3",
+                "receiver_sdf_m", "receiver_boundary_density_kg_m3",
+                "source_vx_m_s", "source_vy_m_s", "source_vz_m_s",
+                "source_wx_rad_s", "source_wy_rad_s", "source_wz_rad_s",
+            ))
+            writer.writerows(self.rows)
+
+
+def replay_scene(scene_path, replay, duration, output, *, settle_duration=0.0, on_step=None,
+                 diagnostics=False, diagnostic_receiver=None):
     """Return solver time, last applied trajectory time, and all fluid centers.
 
     The optional step callback receives the simulation and the start and
@@ -138,6 +236,7 @@ def replay_scene(scene_path, replay, duration, output, *, settle_duration=0.0, o
     """
     if not np.isfinite(settle_duration) or settle_duration < 0:
         raise ValueError("Settling duration must be finite and nonnegative")
+    trace = StepDiagnostics(Path(output) / "step_diagnostics.csv") if diagnostics else None
     simulator = sph.Exec.SimulatorBase()
     simulator.init(
         sceneFile=str(scene_path), outputDir=str(output),
@@ -217,6 +316,8 @@ def replay_scene(scene_path, replay, duration, output, *, settle_duration=0.0, o
             if (vtk_path.is_file()
                     and vtk_path.stat().st_mtime_ns != previous_frames.get(vtk_path.name)):
                 fluid_frames.append((frame, current_time, pose_time))
+            if trace is not None:
+                trace.sample(simulation, pose_time, step_start, current_time, source, diagnostic_receiver)
             if on_step is not None:
                 on_step(simulation, step_start, current_time)
             if step_count % 100 == 0:
@@ -239,6 +340,8 @@ def replay_scene(scene_path, replay, duration, output, *, settle_duration=0.0, o
         return tm.getTime(), pose_time, positions
     finally:
         simulator.cleanup()
+        if trace is not None:
+            trace.save()
 
 
 def main():

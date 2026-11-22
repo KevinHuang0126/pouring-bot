@@ -19,7 +19,7 @@
             0
         ],
         "cflMethod": 1,
-        "cflFactor": 1,
+        "cflFactor": 0.125,
         "cflMaxTimeStepSize": 0.005,
         "boundaryHandlingMethod": 2,
         "DFSPH": {

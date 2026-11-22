@@ -64,6 +64,7 @@ def evaluate(
     hold_source: bool = False,
     settle_duration: float = 0.0,
     config: PouringConfig = DEFAULT_CONFIG,
+    diagnostics: bool = False,
 ) -> dict:
     """Replay a CSV or an in-memory Drake recorder and return the JSON report.
 
@@ -105,9 +106,14 @@ def evaluate(
         (scene_path / "Cache").symlink_to(cache, target_is_directory=True)
 
     # The native simulator owns process-global state.
+    options = {}
+    if diagnostics:
+        receiver = config.receiver_profile or cylindrical_profile(config.receiver_cup)
+        options = {"diagnostics": True,
+                   "diagnostic_receiver": (config.receiver_origin, receiver.contains)}
     with _REPLAY_LOCK:
         time, pose_time, positions = replay_scene(
-            animated_scene, replay, duration, output, settle_duration=settle_duration,
+            animated_scene, replay, duration, output, settle_duration=settle_duration, **options,
         )
 
     origin, rotation = replay.pose(pose_time)
@@ -150,6 +156,7 @@ def main():
         help="Hold the source fixed before replaying the full requested duration",
     )
     parser.add_argument("--hold-source", action="store_true", help="Run a fixed-vessel control")
+    parser.add_argument("--diagnostics", action="store_true", help="Write per-step particle diagnostics")
     parser.add_argument("--config", type=Path, help="JSON cup and fill overrides")
     args = parser.parse_args()
     if args.station_export is not None and args.config is not None:
@@ -166,6 +173,7 @@ def main():
         report = evaluate(
             trajectory, args.output, args.scene_dir, args.template, args.duration,
             hold_source=args.hold_source, settle_duration=args.settle_duration, config=config,
+            diagnostics=args.diagnostics,
         )
     except (ValueError, TypeError, OSError) as exc:
         parser.error(str(exc))
