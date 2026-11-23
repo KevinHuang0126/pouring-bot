@@ -130,6 +130,8 @@ bench=sph_pouring_trial/grasp_transfer_10
   --fill-fraction-min 0.25 --fill-fraction-max 0.65 --output "$bench"
 ```
 
+For a new benchmark, escaped-particle retirement is enabled by default. Rebuild an existing binding with `bash scripts/setup_sph.sh` before the first retirement run. Use `--no-retire-escaped` for a control benchmark or `--escape-plane-z -0.1` to request a lower cutoff in world meters. The evaluator rejects a plane that lies too close to either vessel. Older manifests resume with retirement disabled, and new manifests keep their saved setting.
+
 Resume with the same output directory. Completed methods and completed Drake stages are reused. Incomplete attempts remain on disk, and each new attempt gets its own folder. Repeating an explicit option on resume requires it to match the saved settings.
 
 ```bash
@@ -149,6 +151,34 @@ Both Drake attempts run before SPH for each pair. To pass, a method must complet
 The score is `100 * in_receiver / total_particles`. Particle volumes are uniform within a run, and only centers inside the receiver contribute. Particles still in flight count outside both vessels. The endpoint score is provisional and resolution-dependent. The mean, median, and population standard deviation include zeros for methods that failed in Drake or SPH. SPH success rates describe completed solver evaluations, reported both across all completed methods and conditional on Drake success. Paired differences are ML minus manual in percentage points.
 
 `trials.csv` contains one row per method in each pair. `summary.json` contains aggregate and paired statistics. `trials.json` stores seeds, sampled geometry, stage checkpoints, errors, and paths relative to the output directory. Each pair has a shared profile snapshot and separate `ml` and `manual` directories containing Drake trajectories, logs, and SPH reports where available.
+
+#### Escaped-particle retirement
+
+The escape plane is below a conservative bound on the lowest receiver or swept source geometry across the replay. It leaves at least three SPH kernel support radii of clearance. The automatic plane adds another 50 mm and is at or below world Z = 0. A particle is eligible only below that plane with downward velocity. A group still connected to retained fluid within kernel support stays active. The pouring scene uses downward gravity and has no solid geometry below the padded boundary. This cutoff treats detached falling groups as irreversible misses.
+
+The native DFSPH binding compacts the active particle set and its neighbor search while preserving survivor IDs, mass, and solver warm starts. Retired particles stop participating in force calculations and CFL. Reports distinguish `active_outside_both` from `retired_particles`, with both included in `outside_both`. `retired_volume_ml` accumulates the retired native particle mass divided by rest density. `total_particles` still counts the original fill. `below_world_z_zero` counts active centers below zero at the endpoint and retired centers that were below zero when retired. The sampled step log records active and retired counts and peak active speed.
+
+Standalone evaluation defaults to retirement off. To compare the same station export with and without retirement, point `package` at a successful method's `run/drake` directory and use its recorded active-pour endpoint.
+
+```bash
+package=path/to/method/drake-attempt/run/drake
+end=$(.venv/bin/python -c 'import json, sys; print(json.load(open(sys.argv[1]))["pour_end"]["drake_time_s"])' "$package/station_motion.json")
+for mode in no-retire-escaped retire-escaped; do
+  .venv/bin/python evaluate_sph_spill.py --station-export "$package" \
+    --sph-start-time auto --end-drake-time "$end" --final-hold-duration 1 --headless \
+    --scene-dir sph_pouring_trial/station_cache --"$mode" \
+    --output "sph_pouring_trial/retirement_comparison_$mode"
+done
+```
+
+In a matched headless replay of the smoke benchmark's ML goblet, both runs started at Drake 26.325 s, ended at Drake 44 s, and held for one second. Both initialized 143 particles at 6 mm spacing and used cached maps with one OpenMP thread.
+
+| Retirement | Final transfer | Retired | Solver steps | Wall time |
+| --- | ---: | ---: | ---: | ---: |
+| Off | 123/143 (86.0%) | 0 | 99,283 | 34.93 s |
+| On | 119/143 (83.2%) | 1 (0.216 mL) | 32,773 | 12.95 s |
+
+Adaptive timesteps can diverge after particles retire, and the endpoint transfer can change. The measured timing applies to this replay.
 
 ### Match the planner’s initial fill in WSL
 
@@ -351,7 +381,7 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) for the complete Git workflow and copyab
 
 ## Evaluator reference
 
-The reference environment used Python 3.14.4 and a Release build of SPlisHSPlasH 2.19.1 at commit `dba6b26b9387ab6bdd187d6df0a7c9d490d03500`, with single precision and CompactNSearch. If you build the bindings yourself, apply both patches from `scripts/setup_sph.sh` to the pinned source before compiling. Use the setup script for the tested build configuration.
+The reference environment used Python 3.14.4 and a Release build of SPlisHSPlasH 2.19.1 at commit `dba6b26b9387ab6bdd187d6df0a7c9d490d03500`, with single precision and CompactNSearch. If you build the bindings yourself, apply the patches from `scripts/setup_sph.sh` to the pinned source before compiling. Use the setup script for the tested build configuration.
 
 The checked-in CSV runs for 3 seconds. Use `--duration 0.03` for a quick run or `--hold-source` for a fixed-vessel control. Each run keeps its own scene, VTK frames, log, and `spill_report.json`. Use a new or empty output directory for each run. Reuse `--scene-dir` to share volume maps across serial runs with the same SPlisHSPlasH build. Use separate cache directories for parallel processes. The first run for a cup shape builds its map. Without `--scene-dir`, the maps live with the run's scene.
 

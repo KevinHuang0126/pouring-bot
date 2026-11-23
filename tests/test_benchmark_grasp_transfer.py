@@ -14,6 +14,7 @@ PROFILES = {"cylinder": [(0., .026), (1., .026)], "funnel": [(0., .024), (1., .0
 @pytest.fixture
 def simulations(monkeypatch):
     monkeypatch.setattr(bench, "load_profiles", lambda: PROFILES)
+    monkeypatch.setattr(bench, "check_retirement_binding", lambda: None)
     calls = []
     failures = {}
     interrupt_after = set()
@@ -79,8 +80,13 @@ def simulations(monkeypatch):
             run = Path(get("--output"))
             run.mkdir(parents=True)
             receiver = 7 if method == "ml" else 4
+            retire = "--retire-escaped" in args
+            retired = 1 if retire else 0
             bench.atomic_json(run / "spill_report.json", {
                 "total_particles": 10, "in_receiver": receiver,
+                "escape_retirement": {"enabled": retire},
+                "active_particles": 10 - retired, "retired_particles": retired,
+                "retired_volume_ml": retired * .04, "active_outside_both": 9 - receiver - retired,
                 "in_source": 1, "outside_both": 9 - receiver, "below_world_z_zero": 1,
                 "particle_spacing_m": get("--particle-spacing"),
                 "initial_fill": {"requested_fill_fraction": config["fill_fraction"]},
@@ -143,6 +149,10 @@ def test_drake_and_sph_failures_score_zero_and_preserve_counts(tmp_path, simulat
     success = trials[0]["methods"]["manual"]
     assert success["grasp_height_m"] == .08
     assert success["transfer_percent"] == 40.
+    assert success["active_particles"] == 9
+    assert success["retired_particles"] == 1
+    assert success["retired_volume_ml"] == .04
+    assert success["active_outside_both"] == 4
     assert (success["in_source"], success["outside_both"], success["below_world_z_zero"]) == (1, 5, 1)
     summary = bench.read_json(tmp_path / "summary.json")
     assert summary["methods"]["manual"]["transfer_percent"]["mean"] == pytest.approx(40. / 3)
@@ -173,3 +183,27 @@ def test_resume_recovers_completed_report_and_skips_completed_stages(tmp_path, s
     calls.clear()
     bench.benchmark(tmp_path, resume=True)
     assert not calls
+
+
+def test_legacy_resume_keeps_retirement_disabled(tmp_path, simulations):
+    calls, _, interrupt_after = simulations
+    interrupt_after.add(("trial_001", "ml", "evaluate_sph_spill.py"))
+    with pytest.raises(KeyboardInterrupt):
+        bench.benchmark(tmp_path, {"trials": 1, "retire_escaped": False})
+    manifest = tmp_path / "trials.json"
+    state = bench.read_json(manifest)
+    state["settings"].pop("retire_escaped")
+    state["settings"].pop("escape_plane_z")
+    bench.atomic_json(manifest, state)
+    report_path = tmp_path / state["trials"][0]["methods"]["ml"]["sph_report"]
+    report = bench.read_json(report_path)
+    for key in (*bench.RETIREMENT_FIELDS, "escape_retirement"):
+        report.pop(key)
+    bench.atomic_json(report_path, report)
+    original = report_path.read_bytes()
+    calls.clear()
+    result = bench.benchmark(tmp_path, resume=True)
+    assert [call[:3] for call in calls] == [("trial_001", "manual", "sph")]
+    assert "--retire-escaped" not in calls[0][3]
+    assert result["trials"][0]["methods"]["ml"]["transfer_percent"] == 70.
+    assert report_path.read_bytes() == original

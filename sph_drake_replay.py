@@ -12,7 +12,9 @@ The Drake trajectory prescribes the source vessel pose and velocity.
 
 import argparse
 import csv
+from dataclasses import dataclass
 import json
+from math import fsum
 from time import perf_counter
 from tempfile import NamedTemporaryFile
 from pathlib import Path
@@ -127,7 +129,10 @@ class StepDiagnostics:
                 receiver_speed.extend(speeds[contains(p - origin)])
             prior_ids, prior_p, prior_v = self.previous.get(j, (ids, p - dt * v, np.zeros_like(v)))
             if not np.array_equal(ids, prior_ids):
-                raise RuntimeError("Diagnostics require constant particle IDs")
+                prior_indices = np.searchsorted(prior_ids, ids)
+                if np.any(prior_indices >= len(prior_ids)) or not np.array_equal(prior_ids[prior_indices], ids):
+                    raise RuntimeError("Unexpected new particle IDs in replay diagnostics")
+                prior_p, prior_v = prior_p[prior_indices], prior_v[prior_indices]
             prior = np.stack((prior_p, prior_v), axis=1)
             changes = np.linalg.norm(v - prior[:, 1], axis=1)
             projection = np.linalg.norm(p - prior[:, 0] - dt * v, axis=1)
@@ -147,7 +152,7 @@ class StepDiagnostics:
             snapshots[j] = ids, p, v
         self.previous = snapshots
         if impact is None:
-            raise RuntimeError("No active fluid particles to diagnose")
+            return
         model, fluid_index, particle_index, prior_position = impact
         wall_samples = {}
         for i in range(simulation.numberOfBoundaryModels()):
@@ -203,9 +208,65 @@ class StepDiagnostics:
             writer.writerows(self.rows)
 
 
+def require_retirement_binding():
+    if not hasattr(sph.FluidModel, "retireEscapedParticles"):
+        raise RuntimeError("Escaped-particle retirement requires the patched binding. Run scripts/setup_sph.sh.")
+
+
+@dataclass
+class EscapeRetirement:
+    requested_plane_z: float | None = None
+    plane_z: float | None = None
+    geometry_lower_bound_z: float | None = None
+    support_radius: float | None = None
+    count: int = 0
+    below_zero: int = 0
+    volume_m3: float = 0.
+
+    def configure(self, simulation, replay, start, end, source, receiver, source_radius):
+        gravity = simulation.getVec3ValueReal(simulation.GRAVITATION)
+        if (simulation.numberOfFluidModels() != 1 or simulation.is2DSimulation()
+                or not np.isfinite(gravity).all()
+                or not np.array_equal(gravity[:2], [0., 0.]) or gravity[2] >= 0):
+            raise ValueError("Retirement requires a 3D single-fluid scene with downward Z gravity")
+
+        # PCHIP translation stays within the endpoint range on each segment.
+        # The bounding radius covers source rotation between CSV samples.
+        if replay.hold_source:
+            z = replay.pose(start)[0][2]
+            vertices = np.asarray(source.getVertices()) - source.getPosition()
+            source_floor = z + vertices[:, 2].min()
+        else:
+            knots = replay.times[(replay.times > start) & (replay.times < end)]
+            origins = replay.interpolation.translation(np.r_[start, knots, end])
+            source_floor = origins[:, 2].min() - source_radius
+        receiver_floor = np.asarray(receiver.getVertices())[:, 2].min()
+        self.geometry_lower_bound_z = float(min(source_floor, receiver_floor))
+        self.support_radius = simulation.getSupportRadius()
+        # Reserve two kernel radii for Bender volume-map contributions and
+        # another kernel radius for fluid interaction clearance.
+        safe_max = self.geometry_lower_bound_z - 3 * self.support_radius
+        plane = min(0., safe_max - .05) if self.requested_plane_z is None else self.requested_plane_z
+        if not np.isfinite(plane) or plane > safe_max:
+            raise ValueError(f"Escape plane must be at or below {safe_max:.6g} m for this replay")
+        self.plane_z = float(plane)
+        print(f"Escape plane z={self.plane_z:.4f} m, geometry bound "
+              f"z={self.geometry_lower_bound_z:.4f} m, support={self.support_radius:.4f} m", flush=True)
+
+    @staticmethod
+    def active_volume(model):
+        return fsum(model.getMass(i) for i in range(model.numActiveParticles())) / model.getDensity0()
+
+    def advance(self, model):
+        count, below_zero, volume = model.retireEscapedParticles(self.plane_z)
+        self.count += count
+        self.below_zero += below_zero
+        self.volume_m3 += volume
+
+
 def replay_scene(scene_path, replay, duration, output, *, settle_duration=0.0, on_step=None,
                  diagnostics=False, diagnostic_receiver=None, headless=False, start_time=0.,
-                 final_hold_duration=0.):
+                 final_hold_duration=0., retirement=None):
     """Return solver time, last applied trajectory time, and all fluid centers.
 
     The optional step callback receives the simulation and the start and
@@ -215,6 +276,8 @@ def replay_scene(scene_path, replay, duration, output, *, settle_duration=0.0, o
         raise ValueError("Settling duration must be finite and nonnegative")
     if not np.isfinite(final_hold_duration) or final_hold_duration < 0:
         raise ValueError("Final hold duration must be finite and nonnegative")
+    if retirement is not None:
+        require_retirement_binding()
     trace = StepDiagnostics(Path(output) / "step_diagnostics.csv") if diagnostics else None
     clock_start = perf_counter()
     scene = json.loads(Path(scene_path).read_text())
@@ -273,12 +336,24 @@ def replay_scene(scene_path, replay, duration, output, *, settle_duration=0.0, o
         source = sources[0]
         body = source.getRigidBodyObject()
         offsets = np.asarray(body.getVertices()) - body.getPosition()
-        source.setMaxDist(np.linalg.norm(offsets, axis=1).max())
+        source_radius = float(np.linalg.norm(offsets, axis=1).max())
+        source.setMaxDist(source_radius)
+        retired_count = 0
+        if retirement is not None:
+            receiver = next(bm for bm in boundaries if bm is not source).getRigidBodyObject()
+            retirement.configure(simulation, replay, start_time, start_time + duration, body,
+                                 receiver, source_radius)
+            retirement_model = simulation.getFluidModel(0)
+            initial_positions = np.asarray(retirement_model.getFieldBuffer("position"))[:initial_count]
+            if np.any(initial_positions[:, 2] < retirement.plane_z):
+                raise ValueError("Initialized particles must be above the escape plane")
+            initial_volume = retirement.active_volume(retirement_model)
 
         init_seconds = perf_counter() - clock_start
         solver = simulation.getTimeStep()
         minimum_dt = np.inf
         boundary_seconds = solver_seconds = frame_tracking_seconds = diagnostics_seconds = 0.
+        retirement_seconds = 0.
         trajectory_start = None if settle_duration else initial_time
         pose_time = start_time
         final_hold_start = None
@@ -321,13 +396,12 @@ def replay_scene(scene_path, replay, duration, output, *, settle_duration=0.0, o
             # The solver samples the maps at the updated pose and uses the
             # rigid body's point velocities. step() alone only exports frames.
             started = perf_counter()
-            if not headless:
+            if retirement is not None:
+                step_size = tm.getTimeStepSize()
+            if not headless and retirement is None:
                 if not simulator.timeStepNoGUI():
                     raise RuntimeError("SPH stopped before the requested duration")
             else:
-                # For prescribed volume maps, apply() supplies the pose and
-                # CFL velocity bound. No exporter or native boundary update
-                # is needed after the step.
                 solver.step()
             solver_seconds += perf_counter() - started
             current_time = tm.getTime()
@@ -338,6 +412,27 @@ def replay_scene(scene_path, replay, duration, output, *, settle_duration=0.0, o
             # and the vessel pose sampled by that step.
             last_dt = current_time - step_start
             minimum_dt = min(minimum_dt, last_dt)
+            if trace is not None:
+                started = perf_counter()
+                trace.sample(simulation, pose_time, step_start, current_time, source, diagnostic_receiver)
+                diagnostics_seconds += perf_counter() - started
+            if on_step is not None:
+                on_step(simulation, step_start, current_time)
+            if retirement is not None:
+                started = perf_counter()
+                retirement.advance(retirement_model)
+                if retirement.count != retired_count:
+                    # The solver computed its next step before compaction.
+                    # Reapply the same policy with the original input h.
+                    tm.setTimeStepSize(step_size)
+                    simulation.updateTimeStepSize()
+                    retired_count = retirement.count
+                retirement_seconds += perf_counter() - started
+                if not headless:
+                    started = perf_counter()
+                    boundary_simulator.timeStep()
+                    simulator.step()
+                    solver_seconds += perf_counter() - started
             if vtk_enabled:
                 started = perf_counter()
                 frame = len(fluid_frames) + 1
@@ -347,12 +442,6 @@ def replay_scene(scene_path, replay, duration, output, *, settle_duration=0.0, o
                     fluid_frames.append((frame, current_time, pose_time,
                                          replay.input_time_origin_s + pose_time))
                 frame_tracking_seconds += perf_counter() - started
-            if trace is not None:
-                started = perf_counter()
-                trace.sample(simulation, pose_time, step_start, current_time, source, diagnostic_receiver)
-                diagnostics_seconds += perf_counter() - started
-            if on_step is not None:
-                on_step(simulation, step_start, current_time)
             if current_time >= next_sample:
                 peak_speed, peak_acceleration, peak_z = 0., 0., None
                 active = 0
@@ -372,10 +461,11 @@ def replay_scene(scene_path, replay, duration, output, *, settle_duration=0.0, o
                     peak_acceleration = max(peak_acceleration, float(np.linalg.norm(acceleration, axis=1).max()))
                 dt = current_time - step_start
                 samples.append((current_time, replay.input_time_origin_s + pose_time, dt,
-                                step_count, peak_speed, peak_acceleration, peak_z, active))
+                                step_count, peak_speed, peak_acceleration, peak_z, active, retired_count))
                 next_sample = current_time + .5
                 print(f"t={current_time:.3f} s steps={step_count} dt={dt:.6g} s "
-                      f"peak_speed={peak_speed:.3g} m/s z={peak_z}", flush=True)
+                      f"active={active} retired={retired_count} peak_active_speed={peak_speed:.3g} m/s "
+                      f"z={peak_z}", flush=True)
 
         if fluid_frames:
             with (output / "fluid_frames.csv").open("w", newline="") as stream:
@@ -383,7 +473,8 @@ def replay_scene(scene_path, replay, duration, output, *, settle_duration=0.0, o
                 writer.writerow(("frame", "time_s", "source_pose_time_s", "drake_time_s"))
                 writer.writerows(fluid_frames)
 
-        print(f"Replay completed at t={tm.getTime():.3f} s after {step_count} steps")
+        print(f"Replay completed at t={tm.getTime():.3f} s after {step_count} steps. "
+              f"Retired {retired_count} particles.")
         print(f"Output directory {output}")
         positions = np.array([
             model.getPosition(i)
@@ -395,14 +486,18 @@ def replay_scene(scene_path, replay, duration, output, *, settle_duration=0.0, o
             writer = csv.writer(stream)
             writer.writerow(("solver_time_s", "drake_time_s", "dt_s", "steps",
                              "peak_particle_speed_m_s", "peak_nonpressure_acceleration_m_s2",
-                             "fastest_particle_z_m", "active_particles"))
+                             "fastest_particle_z_m", "active_particles", "retired_particles"))
             writer.writerows(samples)
         simulated = tm.getTime() - initial_time
         wall_s = perf_counter() - clock_start
         metrics = {
             "wall_s": wall_s,
             "wall_s_per_simulated_s": wall_s / simulated,
-            "active_particles": initial_count,
+            "initialized_particles": initial_count,
+            "active_particles": len(positions),
+            "retired_particles": retired_count,
+            "retired_volume_ml": retirement.volume_m3 * 1e6 if retirement is not None else 0.,
+            "retirement_s": retirement_seconds,
             "last_dt_s": last_dt,
             "sampled_peak_particle_speed_m_s": max(row[4] for row in samples),
             "sampled_peak_nonpressure_acceleration_m_s2": max(row[5] for row in samples),
@@ -417,8 +512,13 @@ def replay_scene(scene_path, replay, duration, output, *, settle_duration=0.0, o
             "diagnostics_s": diagnostics_seconds,
             "vtk_frames": len(fluid_frames),
         }
-        if len(positions) != initial_count:
-            raise RuntimeError(f"Particle count changed from {initial_count} to {len(positions)}")
+        if len(positions) + retired_count != initial_count:
+            raise RuntimeError(f"Particle accounting mismatch: initialized {initial_count}, "
+                               f"active {len(positions)}, retired {retired_count}")
+        if retirement is not None:
+            accounted = retirement.active_volume(retirement_model) + retirement.volume_m3
+            if not np.isclose(accounted, initial_volume, rtol=1e-10, atol=0.):
+                raise RuntimeError(f"Native fluid volume changed from {initial_volume} to {accounted} m³")
         (output / "replay_timing.json").write_text(json.dumps(metrics, indent=2) + "\n")
         return tm.getTime(), pose_time, positions
     finally:

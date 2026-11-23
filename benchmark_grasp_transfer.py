@@ -27,6 +27,8 @@ ROOT = Path(__file__).resolve().parent
 METHODS = ("ml", "manual")
 FINAL_HOLD_S = 1.
 COUNTS = ("total_particles", "in_receiver", "in_source", "outside_both", "below_world_z_zero")
+RETIREMENT_OPTIONS = ("retire_escaped", "escape_plane_z")
+RETIREMENT_FIELDS = ("active_particles", "retired_particles", "retired_volume_ml", "active_outside_both")
 SCORING = (
     "Provisional, resolution-dependent particle-center endpoint score: "
     "100 * in_receiver / total_particles. Failures score zero."
@@ -41,6 +43,8 @@ class Settings:
     particle_spacing: float = .0035
     fill_fraction_min: float = .25
     fill_fraction_max: float = .65
+    retire_escaped: bool = True
+    escape_plane_z: float | None = None
 
     def __post_init__(self):
         if self.trials < 1 or self.seed < 0:
@@ -51,6 +55,8 @@ class Settings:
             raise ValueError("Particle spacing must be finite and positive")
         if not 0 < self.fill_fraction_min <= self.fill_fraction_max <= 1:
             raise ValueError("Fill bounds must satisfy 0 < min <= max <= 1")
+        if self.escape_plane_z is not None and (not self.retire_escaped or not isfinite(self.escape_plane_z)):
+            raise ValueError("A finite escape plane requires escaped-particle retirement")
 
 
 def load_profiles():
@@ -120,13 +126,18 @@ def run_drake(trial, method, settings, profile, attempt):
     run_logged("run_ml_sph_pour.py", args, attempt / "drake.log")
 
 
-def run_sph(package, end_time, spacing, attempt, cache):
-    run_logged("evaluate_sph_spill.py", [
+def run_sph(package, end_time, settings, attempt, cache):
+    args = [
         "--station-export", package, "--sph-start-time", "auto",
-        "--particle-spacing", spacing, "--end-drake-time", end_time,
+        "--particle-spacing", settings.particle_spacing, "--end-drake-time", end_time,
         "--final-hold-duration", FINAL_HOLD_S, "--headless", "--scene-dir", cache,
         "--output", attempt / "run",
-    ], attempt / "sph.log")
+    ]
+    if settings.retire_escaped:
+        args.append("--retire-escaped")
+        if settings.escape_plane_z is not None:
+            args.extend(("--escape-plane-z", settings.escape_plane_z))
+    run_logged("evaluate_sph_spill.py", args, attempt / "sph.log")
 
 
 def read_json(path):
@@ -200,7 +211,7 @@ def write_results(output, state):
                "source_x_m", "source_y_m", "wall_m", "floor_m", "fill_fraction",
                "particle_spacing_m")
     fields = (*columns, "grasp_mode", "grasp_height_m", "status", "drake_success", "sph_success",
-              "transfer_percent", *COUNTS, "pour_end_drake_time_s", "failure_reason",
+              "transfer_percent", *COUNTS, *RETIREMENT_FIELDS, "pour_end_drake_time_s", "failure_reason",
               "source_trajectory", "sph_report")
     for trial in state["trials"]:
         for method, result in trial["methods"].items():
@@ -244,7 +255,9 @@ def benchmark(output, overrides=None, *, resume=False):
         state = read_json(manifest)
         if state["schema_version"] != 1 or state["shape_generator_commit"] != SHASHA_COMMIT:
             raise ValueError("Benchmark manifest version or pinned generator differs")
-        settings = Settings(**state["settings"])
+        # Legacy manifests predate retirement. Keep their original physics
+        # setting for any remaining evaluations in the same benchmark.
+        settings = Settings(**{"retire_escaped": False, **state["settings"]})
         if any(getattr(settings, key) != value for key, value in overrides.items()):
             raise ValueError("Resume options must match the saved benchmark settings")
     else:
@@ -256,6 +269,19 @@ def benchmark(output, overrides=None, *, resume=False):
             "schema_version": 1, "shape_generator_commit": SHASHA_COMMIT,
             "settings": asdict(settings), "trials": list(sample_trials(settings, load_profiles())),
         }
+    pending = any(result["status"] != "complete" for trial in state["trials"]
+                  for result in trial["methods"].values())
+    if resume and not pending and (output / "trials.csv").is_file():
+        try:
+            summary = read_json(output / "summary.json")
+            if all(summary["methods"][method]["completed_trials"] == len(state["trials"])
+                   for method in METHODS):
+                return state
+        except (OSError, ValueError, KeyError, TypeError):
+            # The manifest may have been saved before the derived outputs.
+            pass
+    if settings.retire_escaped and pending:
+        check_retirement_binding()
     write_results(output, state)
 
     for trial in state["trials"]:
@@ -264,9 +290,10 @@ def benchmark(output, overrides=None, *, resume=False):
             continue
         pair.mkdir(exist_ok=True)
         profile = pair / "profile.json"
-        atomic_json(profile, {key: trial[key] for key in (
-            "family", "height_m", "mass_kg", "normalized_height_radius_m",
-        )})
+        if not profile.exists():
+            atomic_json(profile, {key: trial[key] for key in (
+                "family", "height_m", "mass_kg", "normalized_height_radius_m",
+            )})
         for stage in ("drake", "sph"):
             for method, result in trial["methods"].items():
                 if result["status"] != ("pending" if stage == "drake" else "drake_complete"):
@@ -315,7 +342,7 @@ def run_stage(output, state, trial, method, settings, profile, method_dir, stage
         else:
             if not reuse:
                 run_sph((output / result["source_trajectory"]).parent, result["pour_end_drake_time_s"],
-                        settings.particle_spacing, attempt, output / "station_cache")
+                        settings, attempt, output / "station_cache")
             report = read_json(folder / "spill_report.json")
             if (report["particle_spacing_m"] != trial["particle_spacing_m"]
                     or report["initial_fill"]["requested_fill_fraction"] != trial["fill_fraction"]
@@ -327,7 +354,18 @@ def run_stage(output, state, trial, method, settings, profile, method_dir, stage
             if (any(type(value) is not int or not 0 <= value <= total for value in counts.values())
                     or not total or total != sum(counts[key] for key in ("in_source", "in_receiver", "outside_both"))):
                 raise ValueError("Invalid SPH particle accounting")
-            result.update(counts, status="complete", sph_success=True,
+            active = report.get("active_particles", total)
+            retired = report.get("retired_particles", 0)
+            active_outside = report.get("active_outside_both", counts["outside_both"] - retired)
+            retired_volume = report.get("retired_volume_ml", 0.)
+            if (report.get("escape_retirement", {}).get("enabled", False) != settings.retire_escaped
+                    or not all(type(n) is int and n >= 0 for n in (active, retired, active_outside))
+                    or active + retired != total or active_outside + retired != counts["outside_both"]
+                    or not isfinite(retired_volume) or retired_volume < 0):
+                raise ValueError("Invalid SPH retirement accounting")
+            result.update(counts, status="complete", sph_success=True, retired_particles=retired,
+                          retired_volume_ml=retired_volume, active_particles=active,
+                          active_outside_both=active_outside,
                           transfer_percent=100 * counts["in_receiver"] / total)
     except (KeyError, TypeError, ValueError, OSError, RuntimeError) as exc:
         result.update(status="complete", sph_success=False, transfer_percent=0.,
@@ -337,13 +375,25 @@ def run_stage(output, state, trial, method, settings, profile, method_dir, stage
     write_results(output, state)
 
 
+def check_retirement_binding():
+    try:
+        from sph_drake_replay import require_retirement_binding
+    except ImportError as exc:
+        raise RuntimeError("Benchmark retirement requires the patched SPH binding. Run scripts/setup_sph.sh.") from exc
+    require_retirement_binding()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--resume", action="store_true", help="Continue using the saved trial settings")
     defaults = Settings()
     for name, value in asdict(defaults).items():
-        parser.add_argument("--" + name.replace("_", "-"), type=type(value), help=f"Default: {value}")
+        if name not in RETIREMENT_OPTIONS:
+            parser.add_argument("--" + name.replace("_", "-"), type=type(value), help=f"Default: {value}")
+    parser.add_argument("--retire-escaped", action=argparse.BooleanOptionalAction,
+                        help="Retire escaped particles (enabled for new benchmarks)")
+    parser.add_argument("--escape-plane-z", type=float, help="Override the safe world-Z cutoff in meters")
     args = vars(parser.parse_args())
     output, resume = args.pop("output").resolve(), args.pop("resume")
     try:

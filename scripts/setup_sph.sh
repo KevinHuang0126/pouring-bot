@@ -36,7 +36,7 @@ if [[ "$(git -C "$source_dir" rev-parse --verify HEAD 2>/dev/null || true)" != "
     git -C "$source_dir" fetch --depth=1 "$upstream" "$revision"
     git -C "$source_dir" checkout --detach FETCH_HEAD
 fi
-for patch in "$root"/patches/splishsplash-{dfsph-timestep,viscosity-initial-guess}.patch; do
+for patch in "$root"/patches/splishsplash-{dfsph-timestep,viscosity-initial-guess,particle-retirement}.patch; do
     if ! git -C "$source_dir" apply --reverse --check "$patch" 2>/dev/null; then
         git -C "$source_dir" apply "$patch"
     fi

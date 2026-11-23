@@ -1,0 +1,210 @@
+diff --git a/SPlisHSPlasH/FluidModel.cpp b/SPlisHSPlasH/FluidModel.cpp
+index 106ef3c..c1224b4 100644
+--- a/SPlisHSPlasH/FluidModel.cpp
++++ b/SPlisHSPlasH/FluidModel.cpp
+@@ -1,6 +1,8 @@
+ #include "FluidModel.h"
+ #include "SPHKernels.h"
+ #include <iostream>
++#include <limits>
++#include <stdexcept>
+ #include "TimeManager.h"
+ #include "TimeStep.h"
+ #include "Utilities/Logger.h"
+@@ -394,6 +396,128 @@ void FluidModel::setNumActiveParticles(const unsigned int num)
+ 	m_numActiveParticles = num;
+ }
+ 
++std::tuple<unsigned int, unsigned int, double> FluidModel::retireEscapedParticles(Real planeZ)
++{
++	if (!std::isfinite(planeZ))
++		throw std::invalid_argument("Escape plane must be finite");
++
++	const unsigned int n = numActiveParticles();
++	const auto escaped = [&](unsigned int i) {
++		return m_particleState[i] == ParticleState::Active &&
++			m_x[i].z() < planeZ && m_v[i].allFinite() && m_x[i].allFinite() && m_v[i].z() < 0;
++	};
++
++	// Avoid allocation and another neighbor search on steps without escapes.
++	unsigned int first = 0;
++	while (first < n && !escaped(first))
++		++first;
++	if (first == n)
++		return {0, 0, 0.0};
++
++	Simulation *sim = Simulation::getCurrent();
++	if (sim->numberOfFluidModels() != 1 || sim->getFluidModel(0) != this ||
++		sim->is2DSimulation() ||
++		sim->getSimulationMethod() != static_cast<int>(SimulationMethods::DFSPH) ||
++		sim->getBoundaryHandlingMethod() != BoundaryHandlingMethods::Bender2019 ||
++		m_emitterSystem->numEmitters() || m_elasticity || m_drag || m_vorticity || m_surfaceTension ||
++		(m_viscosity && m_viscosity->getMethodName() != "Weiler et al. 2018"))
++		throw std::logic_error("Unsupported particle state for escaped-particle retirement");
++
++	std::vector<unsigned char> retire(n, 0);
++	Real highestEscape = m_x[first].z();
++	Real lowestRetained = std::numeric_limits<Real>::infinity();
++	for (unsigned int i = 0; i < n; ++i)
++	{
++		if (i >= first && escaped(i))
++		{
++			retire[i] = 1;
++			highestEscape = std::max(highestEscape, m_x[i].z());
++		}
++		else
++			lowestRetained = std::min(lowestRetained, m_x[i].z());
++	}
++	auto *neighbors = sim->getNeighborhoodSearch();
++	if (highestEscape + sim->getSupportRadius() >= lowestRetained)
++	{
++		// Only remove disconnected groups. Use post-integration positions,
++		// since the solver's neighbor lists are from before integration.
++		neighbors->findNeighbors();
++		std::vector<unsigned int> component;
++		for (unsigned int i = first; i < n; ++i)
++		{
++			if (retire[i] != 1)
++				continue;
++			component.assign(1, i);
++			retire[i] = 2;
++			bool linkedToSurvivor = false;
++			for (size_t k = 0; k < component.size(); ++k)
++			{
++				const unsigned int index = component[k];
++				for (unsigned int j = 0; j < sim->numberOfNeighbors(m_pointSetIndex, m_pointSetIndex, index); ++j)
++				{
++					const unsigned int nb = sim->getNeighbor(m_pointSetIndex, m_pointSetIndex, index, j);
++					if (retire[nb] == 0)
++						linkedToSurvivor = true;
++					else if (retire[nb] == 1)
++					{
++						retire[nb] = 2;
++						component.push_back(nb);
++					}
++				}
++			}
++			if (linkedToSurvivor)
++				for (const unsigned int index : component)
++					retire[index] = 0;
++		}
++	}
++
++	// The active prefix is shared by integration, neighbor search and CFL.
++	// Move native state together, preserving survivor order and persistent IDs.
++	// Initial fields stay keyed by original ID, as in neighborhood sorting.
++	unsigned int active = first;
++	unsigned int belowZero = 0;
++	double volume = 0.0;
++	for (unsigned int i = first; i < n; ++i)
++	{
++		if (retire[i])
++		{
++			belowZero += m_x[i].z() < 0;
++			volume += static_cast<double>(m_masses[i]) / m_density0;
++			continue;
++		}
++		if (active != i)
++		{
++			std::swap(m_x[active], m_x[i]);
++			std::swap(m_v[active], m_v[i]);
++			std::swap(m_a[active], m_a[i]);
++			std::swap(m_masses[active], m_masses[i]);
++			std::swap(m_density[active], m_density[i]);
++			std::swap(m_particleState[active], m_particleState[i]);
++			std::swap(m_objectId[active], m_objectId[i]);
++			std::swap(m_particleId[active], m_particleId[i]);
++			m_particleId_to_index[m_particleId[active]] = active;
++			m_particleId_to_index[m_particleId[i]] = i;
++			// DFSPH pressure warm starts and Weiler's velocity difference
++			// are persistent. Other solver fields are recomputed next step.
++			for (const auto &field : m_fields)
++			{
++				if (!field.storeData || (field.methodName != "DFSPH" && field.methodName != "Weiler et al. 2018"))
++					continue;
++				Real *a = static_cast<Real *>(field.getFct(active));
++				Real *b = static_cast<Real *>(field.getFct(i));
++				std::swap_ranges(a, a + (field.type == FieldType::Vector3 ? 3 : 1), b);
++			}
++		}
++		++active;
++	}
++	if (active < n)
++	{
++		neighbors->resizeSet(m_pointSetIndex, &m_x[0][0], active);
++		setNumActiveParticles(active);
++	}
++	return {n - active, belowZero, volume};
++}
++
+ unsigned int FluidModel::numActiveParticles() const
+ {
+ 	return m_numActiveParticles;
+diff --git a/SPlisHSPlasH/FluidModel.h b/SPlisHSPlasH/FluidModel.h
+index 4af7b6b..b872e70 100644
+--- a/SPlisHSPlasH/FluidModel.h
++++ b/SPlisHSPlasH/FluidModel.h
+@@ -1,6 +1,8 @@
+ #ifndef __FluidModel_h__
+ #define __FluidModel_h__
+ 
++#include <tuple>
++
+ #include "Common.h"
+ #include <vector>
+ 
+@@ -182,6 +184,11 @@ namespace SPH
+ 			void removeFieldByName(const std::string &fieldName);
+ 
+ 			void setNumActiveParticles(const unsigned int num);
++
++			// Call between solver steps in the one-fluid DFSPH pouring scene.
++			// The caller supplies a plane outside all boundary interaction ranges.
++			// Returns the count, count below world z=0, and volume in m^3.
++			std::tuple<unsigned int, unsigned int, double> retireEscapedParticles(Real planeZ);
+ 			unsigned int numberOfParticles() const { return static_cast<unsigned int>(m_x.size()); }
+ 
+ 			EmitterSystem* getEmitterSystem() { return m_emitterSystem; }
+diff --git a/Simulator/Exporter/ParticleExporter_VTK.cpp b/Simulator/Exporter/ParticleExporter_VTK.cpp
+index ff91ae2..ecf96a5 100644
+--- a/Simulator/Exporter/ParticleExporter_VTK.cpp
++++ b/Simulator/Exporter/ParticleExporter_VTK.cpp
+@@ -158,12 +158,14 @@ void ParticleExporter_VTK::writeParticles(const std::string& fileName, FluidMode
+ 		// export to vtk
+ 		const unsigned int nPoints = (unsigned int) positions.size();
+ 		*m_outfile << "POINTS " << nPoints << real_str;
+-		m_outfile->write(reinterpret_cast<char*>(positions[0].data()), 3 * nPoints * sizeof(Real));
++		if (nPoints != 0)
++			m_outfile->write(reinterpret_cast<char*>(positions[0].data()), 3 * nPoints * sizeof(Real));
+ 		*m_outfile << "\n";
+ 
+ 		// particles are cells with one element and the index of the particle
+ 		*m_outfile << "CELLS " << nPoints << " " << 2 * nPoints << "\n";
+-		m_outfile->write(reinterpret_cast<char*>(cells[0].data()), 2 * nPoints * sizeof(unsigned int));
++		if (nPoints != 0)
++			m_outfile->write(reinterpret_cast<char*>(cells[0].data()), 2 * nPoints * sizeof(unsigned int));
+ 		*m_outfile << "\n";
+ 
+ 		*m_outfile << "CELL_TYPES " << nPoints << "\n";
+@@ -230,7 +232,8 @@ void ParticleExporter_VTK::writeParticles(const std::string& fileName, FluidMode
+ 					attrData.emplace_back(val);
+ 				}
+ 				// export to vtk
+-				m_outfile->write(reinterpret_cast<char*>(attrData[0].data()), 3 * nPoints * sizeof(Real));
++				if (nPoints != 0)
++					m_outfile->write(reinterpret_cast<char*>(attrData[0].data()), 3 * nPoints * sizeof(Real));
+ 			}
+ 			else if (field.type == FieldType::UInt)
+ 			{
+diff --git a/pySPlisHSPlasH/FluidModelModule.cpp b/pySPlisHSPlasH/FluidModelModule.cpp
+index c99a696..d1520ec 100644
+--- a/pySPlisHSPlasH/FluidModelModule.cpp
++++ b/pySPlisHSPlasH/FluidModelModule.cpp
+@@ -124,6 +124,7 @@ void FluidModelModule(py::module m_sub){
+ 		.def("numberOfFields", &SPH::FluidModel::numberOfFields)
+ 		.def("removeFieldByName", &SPH::FluidModel::removeFieldByName)
+ 		.def("setNumActiveParticles", &SPH::FluidModel::setNumActiveParticles)
++		.def("retireEscapedParticles", &SPH::FluidModel::retireEscapedParticles, py::arg("plane_z"))
+ 		.def("numberOfParticles", &SPH::FluidModel::numberOfParticles)
+ 		.def("getEmitterSystem", &SPH::FluidModel::getEmitterSystem, py::return_value_policy::reference_internal)
+ 		.def("reset", &SPH::FluidModel::reset)

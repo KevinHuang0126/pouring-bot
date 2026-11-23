@@ -29,9 +29,12 @@ def inside_cup(points, cup, *, bottom=CUP_BOTTOM):
     return cylindrical_profile((*cup[:3], bottom)).contains(points)
 
 
-def classify(positions, source_origin, source_rotation, *, config=DEFAULT_CONFIG):
-    if len(positions) == 0 or not np.isfinite(positions).all():
-        raise RuntimeError("SPH returned empty or non-finite particle positions")
+def classify(positions, source_origin, source_rotation, *, config=DEFAULT_CONFIG,
+             retired_particles=0, retired_below_zero=0):
+    active = len(positions)
+    total = active + retired_particles
+    if total <= 0 or not np.isfinite(positions).all():
+        raise RuntimeError("SPH returned no initial particles or non-finite active positions")
     source_local = (positions - source_origin) @ source_rotation
     receiver_local = (positions - config.receiver_origin) @ config.receiver_rotation().as_matrix()
     in_source = (config.source_profile.contains(source_local) if config.source_profile
@@ -40,19 +43,22 @@ def classify(positions, source_origin, source_rotation, *, config=DEFAULT_CONFIG
                    else inside_cup(receiver_local, config.receiver_cup[:3], bottom=config.receiver_cup[3]))
     if np.any(in_source & in_receiver):
         raise RuntimeError("Source and receiver cavity classifications overlap")
-    total = len(positions)
     source_count = int(in_source.sum())
     receiver_count = int(in_receiver.sum())
     outside_count = total - source_count - receiver_count
     return {
         "total_particles": total,
+        "active_particles": active,
+        "retired_particles": retired_particles,
+        "active_outside_both": outside_count - retired_particles,
         "in_source": source_count,
         "in_receiver": receiver_count,
         "outside_both": outside_count,
         "collected_fraction": receiver_count / total,
         "remaining_fraction": source_count / total,
         "outside_fraction": outside_count / total,
-        "below_world_z_zero": int((positions[:, 2] < 0).sum()),
+        "below_world_z_zero": int((positions[:, 2] < 0).sum()) + retired_below_zero,
+        "retired_below_world_z_zero": retired_below_zero,
     }
 
 
@@ -75,6 +81,8 @@ def evaluate(
     restart_thresholds: RestartThresholds = RestartThresholds(),
     end_drake_time: float | None = None,
     final_hold_duration: float = 0.,
+    retire_escaped: bool = False,
+    escape_plane_z: float | None = None,
 ) -> dict:
     """Replay a CSV or an in-memory Drake recorder and return the JSON report.
 
@@ -85,6 +93,14 @@ def evaluate(
     settle for 0.5 s by default. Other profile fills and tilted starts use 0.25 s.
     """
     from sph_drake_replay import DrakeReplay, prepare_animated_scene, replay_scene
+
+    retirement = None
+    if retire_escaped:
+        from sph_drake_replay import EscapeRetirement, require_retirement_binding
+        require_retirement_binding()
+        retirement = EscapeRetirement(requested_plane_z=escape_plane_z)
+    elif escape_plane_z is not None:
+        raise ValueError("An escape plane requires escaped-particle retirement")
 
     if particle_spacing is not None:
         if config.fill_fraction is None:
@@ -181,6 +197,8 @@ def evaluate(
         options["start_time"] = start
     if final_hold_duration:
         options["final_hold_duration"] = final_hold_duration
+    if retirement is not None:
+        options["retirement"] = retirement
     if diagnostics:
         receiver = config.receiver_profile or cylindrical_profile(config.receiver_cup)
         receiver_rotation = config.receiver_rotation().as_matrix()
@@ -209,7 +227,17 @@ def evaluate(
         "applied_drake_time_s": replay.input_time_origin_s + pose_time,
         "source_held_fixed": hold_source,
         "applied_source_pose_time_s": 0.0 if hold_source else pose_time,
-        **classify(positions, origin, rotation, config=config),
+        "retired_volume_ml": retirement.volume_m3 * 1e6 if retirement is not None else 0.,
+        "escape_retirement": {
+            "enabled": retire_escaped,
+            "requested_plane_z_m": escape_plane_z,
+            "plane_z_m": retirement.plane_z if retirement is not None else None,
+            "geometry_lower_bound_z_m": retirement.geometry_lower_bound_z if retirement is not None else None,
+            "support_radius_m": retirement.support_radius if retirement is not None else None,
+        },
+        **classify(positions, origin, rotation, config=config,
+                   retired_particles=retirement.count if retirement is not None else 0,
+                   retired_below_zero=retirement.below_zero if retirement is not None else 0),
     }
     if config.fill_fraction is not None:
         report["initial_fill"] = json.loads(scene.read_text())["initialFill"]
@@ -261,6 +289,9 @@ def main():
                         help="Hold the last replay pose fixed for this many solver seconds")
     add_replay_start_arguments(parser)
     parser.add_argument("--hold-source", action="store_true", help="Run a fixed-vessel control")
+    parser.add_argument("--retire-escaped", action=argparse.BooleanOptionalAction, default=False,
+                        help="Remove irreversibly escaped particles from the native solver")
+    parser.add_argument("--escape-plane-z", type=float, help="Override the safe world-Z cutoff in meters")
     export = parser.add_mutually_exclusive_group()
     export.add_argument("--export-fps", type=float, default=30., help="VTK frames per second")
     export.add_argument("--headless", action="store_true", help="Skip VTK output and keep the spill report")
@@ -288,8 +319,9 @@ def main():
             particle_spacing=args.particle_spacing,
             restart_thresholds=read_restart_thresholds(args.sph_restart_thresholds),
             end_drake_time=args.end_drake_time, final_hold_duration=args.final_hold_duration,
+            retire_escaped=args.retire_escaped, escape_plane_z=args.escape_plane_z,
         )
-    except (ValueError, TypeError, OSError) as exc:
+    except (ValueError, TypeError, OSError, RuntimeError) as exc:
         parser.error(str(exc))
     print(json.dumps(report, indent=2))
 
