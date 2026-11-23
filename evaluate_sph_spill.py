@@ -17,6 +17,7 @@ from prepare_sph_pouring import (
     cylindrical_profile,
     prepare_scene,
 )
+from sph_start import RestartThresholds, choose_start
 
 
 DEFAULT_TEMPLATE = Path(__file__).with_name("DoubleDamBreak_export.json")
@@ -71,18 +72,17 @@ def evaluate(
     sph_start_time: float | str = 0,
     sph_prepour_seconds: float = 2.,
     particle_spacing: float | None = None,
+    restart_thresholds: RestartThresholds = RestartThresholds(),
 ) -> dict:
     """Replay a CSV or an in-memory Drake recorder and return the JSON report.
 
     Each run owns its output and scene. Pass the same scene_dir to reuse
     volume maps across serial runs. When output is omitted, a fresh temporary
     directory is created and its path is returned in the report.
-    settle_duration holds the first pose before replay. Profile fills and tilted
-    starts settle for 0.25 s by default.
+    settle_duration holds the selected pose before replay. Stationary restarts
+    settle for 0.5 s by default. Other profile fills and tilted starts use 0.25 s.
     """
     from sph_drake_replay import DrakeReplay, prepare_animated_scene, replay_scene
-
-    from sph_start import choose_start
 
     if particle_spacing is not None:
         if config.fill_fraction is None:
@@ -98,26 +98,42 @@ def evaluate(
         trajectory = trajectory.save(output / "input_trajectory.csv")
 
     replay = DrakeReplay(trajectory, hold_source=hold_source)
-    start, onset, fallback = choose_start(replay, config, sph_start_time, sph_prepour_seconds)
-    start_info = {
-        "requested": sph_start_time,
-        "selected_elapsed_s": start,
-        "selected_drake_time_s": replay.input_time_origin_s + start,
-        "onset_drake_time_s": replay.input_time_origin_s + onset if onset is not None else None,
-        "requested_prepour_s": sph_prepour_seconds,
-        "fallback_reason": fallback,
-    }
-    if fallback:
-        print(f"SPH start fallback: {fallback}; replaying from the first pose", flush=True)
-    elif start:
-        print(f"SPH starts at Drake t={start_info['selected_drake_time_s']:.3f} s", flush=True)
-    _, initial_rotation = replay.pose(start)
+    selection = choose_start(replay, config, sph_start_time, sph_prepour_seconds, restart_thresholds)
+    start = selection.elapsed_s
+    time_origin = replay.input_time_origin_s
+    initial_pose = replay.pose(start)
     if settle_duration is None:
-        tilted = not np.allclose(initial_rotation[:, 2], [0., 0., 1.], atol=1e-6)
+        tilted = not np.allclose(initial_pose[1][:, 2], [0., 0., 1.], atol=1e-6)
         settle_duration = 0.25 if tilted or config.fill_fraction is not None else 0.
+        if start:
+            settle_duration = 0.5
     settle_duration = float(settle_duration)
     if not np.isfinite(settle_duration) or settle_duration < 0:
         raise ValueError("Settling duration must be finite and nonnegative")
+    if start and settle_duration == 0:
+        raise ValueError("A stationary restart requires a positive settling duration")
+
+    interval = selection.interval_s
+    checks = selection.checks or {}
+    start_info = {
+        "requested": sph_start_time,
+        "method": "stationary-pose restart" if start else "full trajectory",
+        "selected_elapsed_s": start,
+        "selected_drake_time_s": time_origin + start,
+        "onset_drake_time_s": time_origin + selection.onset_s if selection.onset_s is not None else None,
+        "requested_prepour_s": sph_prepour_seconds,
+        "stationary_interval": {
+            "start_drake_time_s": time_origin + interval[0],
+            "end_drake_time_s": time_origin + interval[1],
+            "duration_s": interval[1] - interval[0],
+            "max_translation_speed_m_s": checks["translation_speed_m_s"]["measured"],
+            "max_angular_speed_deg_s": checks["angular_speed_deg_s"]["measured"],
+        } if interval is not None else None,
+        "restart_safety_checks": checks,
+        "settling_duration_s": settle_duration,
+        "initial_zero_fluid_velocity_assumption_used": bool(start),
+        "fallback_reason": selection.fallback_reason,
+    }
     available = replay.times[-1] - start
     duration = float(available if duration is None else duration)
     if not np.isfinite(duration) or not 0 < duration <= available:
@@ -125,13 +141,30 @@ def evaluate(
 
     scene = prepare_scene(trajectory, scene_path, template, settings=config,
                           export_fps=export_fps, cfl_factor=cfl_factor,
-                          initial_pose=replay.pose(start) if start else None)
+                          initial_pose=initial_pose if start else None)
     animated_scene = scene_path / "scene_animated.json"
     prepare_animated_scene(scene, animated_scene)
     if scene_dir is not None and Path(scene_dir).resolve() != scene_path:
         cache = Path(scene_dir).resolve() / "Cache"
         cache.mkdir(parents=True, exist_ok=True)
         (scene_path / "Cache").symlink_to(cache, target_is_directory=True)
+
+    summary = []
+    if selection.onset_s is not None:
+        summary.append(f"Detected pouring onset: {start_info['onset_drake_time_s']:.3f} s")
+    if interval is not None:
+        summary.append(f"Stationary interval: {time_origin + interval[0]:.3f}–"
+                       f"{time_origin + interval[1]:.3f} s")
+    if selection.fallback_reason:
+        summary.append(f"SPH start fallback: {selection.fallback_reason}")
+    summary.extend([
+        f"Selected SPH start: {start_info['selected_drake_time_s']:.3f} s",
+        f"Initialization: {start_info['method']}",
+        "Fluid initialization: zero velocity",
+        f"Settling duration: {settle_duration:g} s",
+        f"Skipped Drake motion: {start:.3f} s",
+    ])
+    print("\n".join(summary), flush=True)
 
     # The native simulator owns process-global state.
     options = {"headless": True} if export_fps == 0 else {}
@@ -173,14 +206,23 @@ def evaluate(
     return report
 
 
-
 def add_replay_start_arguments(parser, *, start_default="0", spacing_default=None):
     parser.add_argument("--sph-start-time", default=start_default,
                         help="Original CSV timestamp, 0 for full replay, or auto")
     parser.add_argument("--sph-prepour-seconds", type=float, default=2.,
-                        help="Lead-in for automatic start selection")
+                        help="Target lead-in within the final safe stationary interval")
+    parser.add_argument("--sph-restart-thresholds", type=Path,
+                        help="JSON overrides for the stationary restart thresholds")
+    parser.add_argument("--settle-duration", type=float, metavar="SECONDS",
+                        help="Fixed-pose dwell (default: 0.5 s for stationary restarts, "
+                             "0.25 s for other profile fills or tilted starts)")
     parser.add_argument("--particle-spacing", type=float, default=spacing_default,
                         help="Particle center spacing in meters")
+
+
+def read_restart_thresholds(path):
+    return RestartThresholds(**json.loads(path.read_text())) if path else RestartThresholds()
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -199,11 +241,7 @@ def main():
         "--template", type=Path,
         default=DEFAULT_TEMPLATE,
     )
-    parser.add_argument("--duration", type=float, help="Default is the trajectory end time")
-    parser.add_argument(
-        "--settle-duration", type=float, metavar="SECONDS",
-        help="Hold source fixed before replay (default: 0.25 s for profile fills or tilted starts)",
-    )
+    parser.add_argument("--duration", type=float, help="Replay seconds after settling (default: through the end of the trajectory)")
     add_replay_start_arguments(parser)
     parser.add_argument("--hold-source", action="store_true", help="Run a fixed-vessel control")
     export = parser.add_mutually_exclusive_group()
@@ -231,6 +269,7 @@ def main():
             cfl_factor=args.cfl_factor,
             sph_start_time=args.sph_start_time, sph_prepour_seconds=args.sph_prepour_seconds,
             particle_spacing=args.particle_spacing,
+            restart_thresholds=read_restart_thresholds(args.sph_restart_thresholds),
         )
     except (ValueError, TypeError, OSError) as exc:
         parser.error(str(exc))

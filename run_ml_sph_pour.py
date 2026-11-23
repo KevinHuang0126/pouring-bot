@@ -11,7 +11,7 @@ from tempfile import TemporaryDirectory
 
 import numpy as np
 
-from evaluate_sph_spill import add_replay_start_arguments
+from evaluate_sph_spill import add_replay_start_arguments, read_restart_thresholds
 from fluid_model import DEFAULT_FILL_FRACTION
 from prepare_sph_pouring import VesselProfile, initial_profile_fill
 
@@ -208,6 +208,7 @@ def main():
         output.mkdir(parents=True, exist_ok=True)
         if any(output.iterdir()):
             raise ValueError("Choose a new or empty output directory")
+        thresholds = read_restart_thresholds(args.sph_restart_thresholds)
         with TemporaryDirectory(prefix="pouring-upstream-") as snapshot:
             hollow, geometry, models_dir = generate(args, output, Path(snapshot))
         spacing, fallback = select_particle_spacing(hollow, args.fill_fraction, args.particle_spacing)
@@ -224,9 +225,11 @@ def main():
             report = evaluate(capture.output / "source_trajectory.csv", output / "sph",
                               args.scene_dir, duration=args.duration, config=capture.config,
                               export_fps=0. if args.headless else args.export_fps,
-                              sph_start_time=args.sph_start_time, sph_prepour_seconds=args.sph_prepour_seconds)
+                              sph_start_time=args.sph_start_time,
+                              sph_prepour_seconds=args.sph_prepour_seconds,
+                              settle_duration=args.settle_duration, restart_thresholds=thresholds)
             print(json.dumps(report, indent=2))
-    except (ValueError, KeyError, OSError) as exc:
+    except (ValueError, KeyError, OSError, TypeError) as exc:
         parser.error(str(exc))
 
 
