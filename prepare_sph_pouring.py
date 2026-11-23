@@ -134,7 +134,7 @@ def initial_profile_fill(profile, fraction, particle_radius):
     if remaining:
         raise ValueError(
             f"Cannot seed {target * 1e6:.3f} mL at the current spacing and wall clearance. "
-            f"The lattice fits {initialized * 1e6:.3f} mL. Reduce the fill fraction."
+            f"The lattice fits {initialized * 1e6:.3f} mL. Reduce the fill fraction for a new run or select a finer particle spacing."
         )
     return points, {
         "usable_capacity_ml": capacity * 1e6,
@@ -309,7 +309,7 @@ def scene_rotation(rotation):
     return {"rotationAngle": angle, "rotationAxis": (vector / angle).tolist() if angle else [0, 1, 0]}
 
 
-def prepare_scene(trajectory, output, template, *, settings=DEFAULT_CONFIG, export_fps=30.0, cfl_factor=None):
+def prepare_scene(trajectory, output, template, *, settings=DEFAULT_CONFIG, export_fps=30.0, cfl_factor=None, initial_pose=None):
     if not math.isfinite(export_fps) or export_fps < 0:
         raise ValueError("Export FPS must be finite and nonnegative")
     if cfl_factor is not None and (not math.isfinite(cfl_factor) or cfl_factor <= 0):
@@ -321,7 +321,7 @@ def prepare_scene(trajectory, output, template, *, settings=DEFAULT_CONFIG, expo
     if len(source) < 2:
         raise ValueError("Expected at least two Drake source pose samples")
     times = [t for t, _ in source]
-    (output/'source_trajectory.csv').write_text(trajectory.read_text())
+    (output/'source_trajectory.csv').write_bytes(trajectory.read_bytes())
     source_mesh = write_boundary(output, "source", settings.source_profile,
                                  settings.source_cup, DEFAULT_CONFIG.source_cup)
     receiver_mesh = write_boundary(output, "receiver", settings.receiver_profile,
@@ -338,8 +338,12 @@ def prepare_scene(trajectory, output, template, *, settings=DEFAULT_CONFIG, expo
         config['timeStepSize'] = settings.max_time_step
         config['cflMaxTimeStepSize'] = settings.max_time_step
     first = source[0][1]
-    origin = first[:3]
-    source_rotation = Rotation.from_quat(first[3:], scalar_first=True)
+    if initial_pose is None:
+        origin = first[:3]
+        source_rotation = Rotation.from_quat(first[3:], scalar_first=True)
+    else:
+        origin, rotation = initial_pose
+        source_rotation = Rotation.from_matrix(rotation)
     local_fill = source_rotation.magnitude() > 1e-12
     fill_origin = np.zeros(3) if local_fill else origin
     config['cameraPosition'] = [0.4, -0.5, 0.35]
@@ -363,6 +367,15 @@ def prepare_scene(trajectory, output, template, *, settings=DEFAULT_CONFIG, expo
             "id": "Fluid", "particleFile": samples.name, "translation": origin.tolist(),
             **scene_rotation(source_rotation),
         }]
+        density = next((m.get("density0", 1000.) for m in scene["Materials"]
+                        if m["id"] == "Fluid"), 1000.)
+        metrics.update(
+            particle_spacing_m=2 * settings.particle_radius,
+            rest_density_kg_m3=density,
+            nominal_particle_mass_kg=metrics["nominal_particle_volume_ml"] * 1e-6 * density,
+            target_fluid_mass_kg=metrics["target_volume_ml"] * 1e-6 * density,
+            estimated_initialized_mass_kg=metrics["estimated_initialized_volume_ml"] * 1e-6 * density,
+        )
         scene["initialFill"] = metrics
     else:
         scene["FluidBlocks"] = [{

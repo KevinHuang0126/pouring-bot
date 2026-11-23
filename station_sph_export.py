@@ -77,13 +77,15 @@ class StationSphExport:
     """Capture the whole dry-station run from the initial upright source pose."""
 
     def __init__(self, output, models_dir, vessel_name="test_tube", *,
-                 source_profile=None, source_models_dir=None, metadata=None, fill_fraction=None):
+                 source_profile=None, source_models_dir=None, metadata=None, fill_fraction=None,
+                 particle_spacing=.003):
         self.output = Path(output).resolve()
         self.output.mkdir(parents=True, exist_ok=True)
         if any(self.output.iterdir()):
             raise ValueError("Station export directory must be empty")
         self.metadata = metadata
         self.fill_fraction = fill_fraction
+        self.particle_spacing = particle_spacing
         self.initial_fill = None
         self.source_profile = source_profile
         if source_profile is None and vessel_name != "test_tube":
@@ -123,7 +125,7 @@ class StationSphExport:
             **cup, source_profile=self.source_profile, receiver_cup=self.receiver_cup,
             receiver_origin=receiver_origin, receiver_quaternion_wxyz=receiver_quaternion,
             **bounds, fill_fraction=self.fill_fraction,
-            particle_radius=.0015, max_time_step=.001,
+            particle_radius=self.particle_spacing / 2, max_time_step=.001,
         )
 
         if self.fill_fraction is not None:

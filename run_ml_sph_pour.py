@@ -11,8 +11,9 @@ from tempfile import TemporaryDirectory
 
 import numpy as np
 
+from evaluate_sph_spill import add_replay_start_arguments
 from fluid_model import DEFAULT_FILL_FRACTION
-from prepare_sph_pouring import VesselProfile
+from prepare_sph_pouring import VesselProfile, initial_profile_fill
 
 ROOT = Path(__file__).resolve().parent
 SHASHA_COMMIT = "2fadb4b0dbf88d2c626bdfb9371d5978ccd474a3"
@@ -132,6 +133,23 @@ def generate(args, output, upstream):
     return hollow, geometry, generator.OUTPUT_DIR
 
 
+
+def select_particle_spacing(profile, fraction, requested):
+    """Prefer 3.5 mm, preserving fill for shapes that need the old lattice."""
+    spacing = .0035 if requested is None else requested
+    if not np.isfinite(spacing) or spacing <= 0:
+        raise ValueError("Particle spacing must be positive and finite")
+    try:
+        initial_profile_fill(profile, fraction, spacing / 2)
+    except ValueError as exc:
+        if requested is not None:
+            raise
+        initial_profile_fill(profile, fraction, .0015)
+        return .003, str(exc)
+    return spacing, None
+
+
+
 def run_drake(args, output, hollow, geometry, models_dir):
     import fluid_model
     import pour_planner
@@ -151,7 +169,8 @@ def run_drake(args, output, hollow, geometry, models_dir):
     fluid_model.EFFECTIVE_AREA_FRACTIONS[name] = .05
     drake_output = output / "drake"
     capture = StationSphExport(drake_output, ROOT / "models", name, source_profile=hollow,
-                               source_models_dir=models_dir, metadata=geometry, fill_fraction=args.fill_fraction)
+                               source_models_dir=models_dir, metadata=geometry, fill_fraction=args.fill_fraction,
+                               particle_spacing=geometry["particle_spacing_m"])
     station.main(["--vessel", name, "--export-dir", str(drake_output), "--export-partial"],
                  capture=capture, source_xy=(args.source_x, args.source_y))
     return capture
@@ -175,7 +194,8 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--scene-dir", type=Path, default=Path("sph_pouring_trial/station_cache"))
     parser.add_argument("--duration", type=float, help="Limit SPH replay for a smoke test")
-    parser.add_argument("--export-fps", type=float, default=12.)
+    parser.add_argument("--export-fps", type=float, default=6.)
+    add_replay_start_arguments(parser, start_default="auto")
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--drake-only", action="store_true")
     args = parser.parse_args()
@@ -190,6 +210,10 @@ def main():
             raise ValueError("Choose a new or empty output directory")
         with TemporaryDirectory(prefix="pouring-upstream-") as snapshot:
             hollow, geometry, models_dir = generate(args, output, Path(snapshot))
+        spacing, fallback = select_particle_spacing(hollow, args.fill_fraction, args.particle_spacing)
+        geometry.update(particle_spacing_m=spacing, particle_spacing_fallback_reason=fallback)
+        if fallback:
+            print(f"Using 3 mm spacing to preserve the requested fill. {fallback}", flush=True)
         capture = run_drake(args, output, hollow, geometry, models_dir)
         if not args.drake_only and len(capture.recorder.rows) < 2:
             print("Drake produced only the initial pose. See drake/station_motion.json.")
@@ -199,7 +223,8 @@ def main():
 
             report = evaluate(capture.output / "source_trajectory.csv", output / "sph",
                               args.scene_dir, duration=args.duration, config=capture.config,
-                              export_fps=0. if args.headless else args.export_fps)
+                              export_fps=0. if args.headless else args.export_fps,
+                              sph_start_time=args.sph_start_time, sph_prepour_seconds=args.sph_prepour_seconds)
             print(json.dumps(report, indent=2))
     except (ValueError, KeyError, OSError) as exc:
         parser.error(str(exc))

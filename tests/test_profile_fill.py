@@ -64,3 +64,27 @@ def test_capacity_that_does_not_fit_at_native_spacing_is_rejected():
     narrow = hollow_profile([(0., .0169), (1., .0169)], .12, .003, .004)
     with pytest.raises(ValueError, match="Reduce the fill fraction"):
         initial_profile_fill(narrow, 1., .0015)
+
+
+@pytest.mark.parametrize("knots", PROFILES, ids=["cylinder", "goblet", "waisted", "hourglass"])
+def test_coarser_spacing_conserves_nominal_fill(knots):
+    profile = hollow_profile(knots, .15, .003, .004)
+    _, original = initial_profile_fill(profile, .25, .0015)
+    points, coarse = initial_profile_fill(profile, .25, .00175)
+    assert profile.contains(points).all()
+    assert coarse["target_surface_height_m"] == original["target_surface_height_m"]
+    assert coarse["target_volume_ml"] == original["target_volume_ml"]
+    assert coarse["initialized_particle_count"] / original["initialized_particle_count"] == pytest.approx(
+        (.003/.0035)**3, abs=.002,
+    )
+    assert abs(coarse["volume_error_ml"]) <= .5 * coarse["nominal_particle_volume_ml"]
+
+
+def test_spacing_fallback_preserves_requested_fill():
+    from run_ml_sph_pour import select_particle_spacing
+
+    profile = hollow_profile(PROFILES[-1], .15, .003, .004)
+    spacing, fallback = select_particle_spacing(profile, .75, None)
+    assert spacing == .003 and "Cannot seed" in fallback
+    with pytest.raises(ValueError, match="Cannot seed"):
+        select_particle_spacing(profile, .75, .0035)

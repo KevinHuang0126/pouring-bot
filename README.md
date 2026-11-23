@@ -131,7 +131,7 @@ run=sph_pouring_trial/goblet_fill75
 
 Use `--grasp-mode ml` without `--grasp-height` for model-selected grasps. Fill is separate from grasp selection. Omit `--duration` for the full replay or use `--headless` to skip frames. Check the startup particle count in the Drake log or the `initial_fill` section of the exported geometry metadata before committing to a long run.
 
-The planner and SPH use the same capacity, integrated over the actual polygonal cross-sections of the hollow mesh. The analytic free-surface height comes from inverting that integral. SPH fills horizontal layers of a wall-clipped lattice using its existing 3 mm spacing. Each particle represents 0.027 mL at this spacing, so rounding to the nearest particle gives at most 0.0135 mL volume error for a supported fill. Wall and bottom clearance leave fewer particle centers per layer. To preserve the requested volume, the seeded top layer can sit above the analytic free-surface height. Both heights are recorded. A 0.25 s fixed-pose dwell lets gravity redistribute the fill, including for tilted starts. The replay retains the measured trajectory, and `--settle-duration` controls the dwell. Requests that cannot fit at this spacing and clearance are rejected with the maximum volume the lattice can seed.
+The planner and SPH use the same capacity, integrated over the actual polygonal cross-sections of the hollow mesh. The analytic free-surface height comes from inverting that integral. SPH fills horizontal layers of a wall-clipped lattice. Each particle represents 0.042875 mL at the generated workflow’s default 3.5 mm spacing, or 0.027 mL at 3 mm. Rounding to the nearest particle gives at most half a particle volume of error for a supported fill. Wall and bottom clearance leave fewer particle centers per layer. To preserve the requested volume, the seeded top layer can sit above the analytic free-surface height. Both heights are recorded. A 0.25 s fixed-pose dwell lets gravity redistribute the fill, including for tilted starts. The replay retains the measured trajectory, and `--settle-duration` controls the dwell. Requests that cannot fit at this spacing and clearance are rejected with the maximum volume the lattice can seed.
 
 The station package records the requested fraction in `cups.json` and writes the capacity, target volume, particle count, realized fraction and signed volume error under `initial_fill` in the metadata and evaluation report. Older bundles with explicit fill boxes still replay as recorded. Add `--fill-fraction` to `visualize_station.py --export-dir ...` to opt an original vessel into profile fill.
 
@@ -145,6 +145,54 @@ The station package records the requested fraction in `cups.json` and writes the
 The 75%-filled goblet targets 148.127 mL and initializes 148.122 mL with 5,486 particles. It retained all particles through settling and the 0.05 s replay. On the same cached, headless 0.06 s cylinder replay, the old 416-particle block took 0.26 s and the new 6,721-particle fill took 2.50 s. The [fill benchmark](benchmarks/sph_fill.csv) records the volume error, heights, particle counts and startup runtime across all 12 cases. Use a short replay to measure runtime before evaluating an entire take.
 
 The compact-cylinder verification used `--family cylinder --height 0.12 --radius-scale 0.65 --grasp-mode manual --grasp-height 0.07 --fill-fraction 0.25 --headless`. It seeded 650 particles representing 17.550 mL for a 17.5524 mL target. The cached full 58 s replay took 385 s, including its 0.25 s settling phase. All 650 particles were conserved and ended with 277 in the source, 275 in the receiver, and 98 outside both.
+
+### Optimized goblet replay in WSL
+
+Use the existing patched SPH build. The first replay at a new spacing builds new volume maps. Later runs reuse that spacing’s maps.
+
+```bash
+cd ~/pouring-bot
+git fetch origin shasha/ml-grasp-dataset
+export PYTHONPATH="$PWD/.venv/splishsplash/build/lib"
+export OMP_NUM_THREADS=1
+run=sph_pouring_trial/goblet_optimized
+.venv/bin/python run_ml_sph_pour.py --family goblet --grasp-mode ml \
+  --output "$run" --export-fps 6
+.venv/bin/python visualize_pour.py --fluid-output "$run/sph" --no-robot
+```
+
+Replay an existing package with the same optimization settings without repeating Drake or grasp selection.
+
+```bash
+.venv/bin/python evaluate_sph_spill.py --station-export "$run/drake" \
+  --sph-start-time auto --sph-prepour-seconds 2.0 --particle-spacing 0.0035 \
+  --export-fps 6 --scene-dir sph_pouring_trial/station_cache --output "${run}_replay"
+.venv/bin/python visualize_pour.py --fluid-output "${run}_replay" --no-robot
+```
+
+The auto-start check looks for a sustained rise in tilt relative to gravity, followed by a pouring-scale angle. It looks for a quiet start roughly two seconds earlier and checks the prior motion against conservative rim headroom estimates based on fill level, tilt, velocity and acceleration. It falls back to the first pose when history or fill metadata makes a restart unsafe. A nonzero explicit start such as `--sph-start-time 25.0` refers to the original CSV timestamp and must pass the same history and quiet-window checks. Use `--sph-start-time 0` to replay the full take. The shortcut reinitializes and settles at the measured start pose. It cannot reproduce previous slosh exactly.
+
+The original CSV is copied byte for byte. The settling dwell advances the SPH clock while holding Drake time fixed. `fluid_frames.csv` keeps solver time, elapsed time from the first recorded pose and the original Drake timestamp. `spill_report.json` records the selected start, detected onset and any fallback reason. Legacy boxes lack a trustworthy planner fill fraction, so they keep full replay and their saved spacing. The saved fill fraction is never replaced by the CLI default when replaying a package.
+
+Use `--particle-spacing 0.003` to recover the old resolution. If a narrow geometry cannot hold the saved fill at the default 3.5 mm with the existing initialization clearance, the generator reports a fallback to 3 mm and records the reason in the geometry metadata. An explicit spacing is honored or rejected if it cannot fit. The radius controls native mass, kernel support and neighborhood search together. Volume-map cache filenames include the particle radius. The same goblet target of 148.127 mL initializes 148.122 mL with 5,486 particles at 3 mm and 148.133 mL with 3,455 particles at 3.5 mm, a 37% reduction in count.
+
+`replay_samples.csv` samples timestep, active count, peak speed, fastest particle height and peak nonpressure acceleration every 0.5 solver seconds. `replay_timing.json` records the minimum and mean step size and timings for boundary/interpolation, native stepping plus export, and frame tracking. In the archived goblet replay, the fastest particles near 36 s were already below the workspace at about 29 m/s. Their subsequent speed increase was consistent with free fall. Native CFL considers all active particles, including misses, so those particles drove it to the existing 100 µs minimum. CFL, pressure, gravity and viscosity are unchanged.
+
+### Goblet benchmark
+
+All runs used the same recorded ML goblet trajectory, a 75% fill, and cached boundary maps. Simulated time includes the 0.25 s fixed-pose settling period.
+
+| Replay | Particles | Simulated time | Steps | Min / mean timestep | Wall time |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 3.0 mm, 12 FPS, start at zero | 5,486 | 0.301 s | 368 | 0.100 / 0.817 ms | 13.54 s |
+| 3.5 mm, 6 FPS, start at zero | 3,455 | 0.301 s | 323 | 0.100 / 0.933 ms | 7.38 s |
+| 3.5 mm, 6 FPS, auto start at 26.125 s | 3,455 | 0.302 s | 324 | 0.100 / 0.931 ms | 6.58 s |
+| 3.0 mm, 12 FPS, matched pour interval | 5,486 | 9.151 s | 45,653 | 0.100 / 0.200 ms | 606.59 s |
+| 3.5 mm, 6 FPS, matched pour interval | 3,455 | 9.151 s | 50,096 | 0.100 / 0.183 ms | 417.33 s |
+
+The matched pour ran **1.45× faster**. Auto-start also skipped 26.125 s of recorded motion. The benchmark covered the onset and active pour, so whole-trajectory speedup remains unmeasured. The target was 148.127 mL with initialized volumes of 148.122 mL and 148.133 mL respectively. Both runs conserved all particles. At 3.5 mm, sampled rim outflow appeared 0.83 s earlier, and receiver collection at the endpoint increased from 40.6% to 48.3%. The fraction outside both vessels fell from 11.7% to 6.0% and may include liquid still in flight. These differences show that collection estimates are sensitive to particle spacing. Use the 3.0 mm override for comparisons with prior runs.
+
+Native solver steps and exports together accounted for over 94% of matched-pour runtime. A short 6 vs. 12 FPS check at fixed spacing produced identical step counts, timestep statistics, and sampled peak speed, with two and four exported frames respectively. In the archived slow replay around 36 s, the fastest escaped particles were already well below the workspace and accelerating near gravity. Their speed was sufficient to drive CFL to the existing 0.100 ms floor. [Benchmark data](benchmarks/sph_performance.csv)
 
 ### Fast ML evaluation and visual evaluation
 
@@ -166,7 +214,7 @@ run_dir=sph_pouring_trial/test_tube_run_01
 
 Headless evaluation still writes the final spill report and `replay_timing.json`. In Python use `evaluate(trajectory, config=config, export_fps=0)` for the same path. The default is 30 fps. Use `--diagnostics` to collect per-step data when investigating a run. It adds work and is off by default.
 
-Use `--duration` to stop after a recorded interval if that scoring horizon is appropriate for the comparison. The full replay remains the default. There is no automatic start-time skip. The recorded tube is already tilted by about 17° before the final tilt, and its preceding grasp and transport determine the state of the fill. Starting there with a fresh box of particles would change the experiment.
+Use `--duration` to cap the requested interval after the selected start. A standalone evaluation retains the bundle’s saved spacing and starts at the first pose unless you pass an override. Generated runs use auto-start, 3.5 mm spacing and 6 fps by default. Use `--sph-start-time 0` when earlier liquid motion matters.
 
 ### Free-flight instability and runtime
 

@@ -204,7 +204,7 @@ class StepDiagnostics:
 
 
 def replay_scene(scene_path, replay, duration, output, *, settle_duration=0.0, on_step=None,
-                 diagnostics=False, diagnostic_receiver=None, headless=False):
+                 diagnostics=False, diagnostic_receiver=None, headless=False, start_time=0.):
     """Return solver time, last applied trajectory time, and all fluid centers.
 
     The optional step callback receives the simulation and the start and
@@ -236,7 +236,7 @@ def replay_scene(scene_path, replay, duration, output, *, settle_duration=0.0, o
         if scene.get("initialFillFrame") == "source":
             # Native FluidBlocks sample an axis-aligned lattice. Move both
             # position fields before deferred sorting or any force evaluation.
-            origin, rotation = replay.pose(0.)
+            origin, rotation = replay.pose(start_time)
             for j in range(simulation.numberOfFluidModels()):
                 model = simulation.getFluidModel(j)
                 n = model.numActiveParticles()
@@ -277,8 +277,10 @@ def replay_scene(scene_path, replay, duration, output, *, settle_duration=0.0, o
         minimum_dt = np.inf
         boundary_seconds = solver_seconds = frame_tracking_seconds = diagnostics_seconds = 0.
         trajectory_start = None if settle_duration else initial_time
-        pose_time = 0.0
+        pose_time = start_time
         step_count = 0
+        next_sample = 0.
+        samples = []
         fluid_frames = []
         output = Path(output)
         vtk_output = output / "vtk"
@@ -299,7 +301,7 @@ def replay_scene(scene_path, replay, duration, output, *, settle_duration=0.0, o
             trajectory_time = 0.0 if settling else step_start - trajectory_start
             if not settling and trajectory_time >= duration:
                 break
-            pose_time = trajectory_time
+            pose_time = start_time if replay.hold_source else start_time + trajectory_time
             started = perf_counter()
             if step_count == 0 or not (settling or replay.hold_source):
                 replay.apply(source, pose_time, stationary=settling, update_mesh=not headless)
@@ -322,14 +324,16 @@ def replay_scene(scene_path, replay, duration, output, *, settle_duration=0.0, o
             step_count += 1
             # VTK has no timestamp. Record the step that produced each frame
             # and the vessel pose sampled by that step.
-            minimum_dt = min(minimum_dt, current_time - step_start)
+            last_dt = current_time - step_start
+            minimum_dt = min(minimum_dt, last_dt)
             if vtk_enabled:
                 started = perf_counter()
                 frame = len(fluid_frames) + 1
                 vtk_path = vtk_output / f"ParticleData_Fluid_{frame}.vtk"
                 if (vtk_path.is_file()
                         and vtk_path.stat().st_mtime_ns != previous_frames.get(vtk_path.name)):
-                    fluid_frames.append((frame, current_time, pose_time))
+                    fluid_frames.append((frame, current_time, pose_time,
+                                         replay.input_time_origin_s + pose_time))
                 frame_tracking_seconds += perf_counter() - started
             if trace is not None:
                 started = perf_counter()
@@ -337,13 +341,34 @@ def replay_scene(scene_path, replay, duration, output, *, settle_duration=0.0, o
                 diagnostics_seconds += perf_counter() - started
             if on_step is not None:
                 on_step(simulation, step_start, current_time)
-            if step_count % 100 == 0:
-                print(f"t={tm.getTime():.3f} s steps={step_count}", flush=True)
+            if current_time >= next_sample:
+                peak_speed, peak_acceleration, peak_z = 0., 0., None
+                active = 0
+                for j in range(simulation.numberOfFluidModels()):
+                    model = simulation.getFluidModel(j)
+                    n = model.numActiveParticles()
+                    if not n:
+                        continue
+                    active += n
+                    v = np.asarray(model.getFieldBuffer("velocity"))[:n]
+                    speeds = np.linalg.norm(v, axis=1)
+                    index = int(np.argmax(speeds))
+                    if peak_z is None or speeds[index] > peak_speed:
+                        peak_speed = float(speeds[index])
+                        peak_z = float(model.getPosition(index)[2])
+                    acceleration = np.array([model.getAcceleration(i) for i in range(n)])
+                    peak_acceleration = max(peak_acceleration, float(np.linalg.norm(acceleration, axis=1).max()))
+                dt = current_time - step_start
+                samples.append((current_time, replay.input_time_origin_s + pose_time, dt,
+                                step_count, peak_speed, peak_acceleration, peak_z, active))
+                next_sample = current_time + .5
+                print(f"t={current_time:.3f} s steps={step_count} dt={dt:.6g} s "
+                      f"peak_speed={peak_speed:.3g} m/s z={peak_z}", flush=True)
 
         if fluid_frames:
             with (output / "fluid_frames.csv").open("w", newline="") as stream:
                 writer = csv.writer(stream)
-                writer.writerow(("frame", "time_s", "source_pose_time_s"))
+                writer.writerow(("frame", "time_s", "source_pose_time_s", "drake_time_s"))
                 writer.writerows(fluid_frames)
 
         print(f"Replay completed at t={tm.getTime():.3f} s after {step_count} steps")
@@ -354,9 +379,21 @@ def replay_scene(scene_path, replay, duration, output, *, settle_duration=0.0, o
                           for j in range(simulation.numberOfFluidModels()))
             for i in range(model.numActiveParticles())
         ]).reshape(-1, 3)
+        with (output / "replay_samples.csv").open("w", newline="") as stream:
+            writer = csv.writer(stream)
+            writer.writerow(("solver_time_s", "drake_time_s", "dt_s", "steps",
+                             "peak_particle_speed_m_s", "peak_nonpressure_acceleration_m_s2",
+                             "fastest_particle_z_m", "active_particles"))
+            writer.writerows(samples)
         simulated = tm.getTime() - initial_time
+        wall_s = perf_counter() - clock_start
         metrics = {
-            "wall_s": perf_counter() - clock_start,
+            "wall_s": wall_s,
+            "wall_s_per_simulated_s": wall_s / simulated,
+            "active_particles": initial_count,
+            "last_dt_s": last_dt,
+            "sampled_peak_particle_speed_m_s": max(row[4] for row in samples),
+            "sampled_peak_nonpressure_acceleration_m_s2": max(row[5] for row in samples),
             "initialization_s": init_seconds,
             "simulated_s": simulated,
             "steps": step_count,
