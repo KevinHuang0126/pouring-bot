@@ -12,6 +12,8 @@ from drake_trajectory_export import TrajectoryRecorder
 from prepare_sph_pouring import PouringConfig, VesselProfile, cup_mesh, profile_mesh
 
 
+ET.register_namespace("drake", "http://drake.mit.edu")
+
 SOURCE_VESSELS = ("test_tube", "erlenmeyer", "boiling_flask")
 
 
@@ -74,15 +76,20 @@ def cylindrical_mesh(link, mesh_path, wall, bottom):
 class StationSphExport:
     """Capture the whole dry-station run from the initial upright source pose."""
 
-    def __init__(self, output, models_dir, vessel_name="test_tube"):
+    def __init__(self, output, models_dir, vessel_name="test_tube", *,
+                 source_profile=None, source_models_dir=None, metadata=None):
         self.output = Path(output).resolve()
         self.output.mkdir(parents=True, exist_ok=True)
         if any(self.output.iterdir()):
             raise ValueError("Station export directory must be empty")
-        self.source_profile = None if vessel_name == "test_tube" else flask_profile(vessel_name)
+        self.metadata = metadata
+        self.source_profile = source_profile
+        if source_profile is None and vessel_name != "test_tube":
+            self.source_profile = flask_profile(vessel_name)
         self.vessel_name = vessel_name
         self.source_model, self.source_cup = hollow_model(
-            models_dir, self.output, vessel_name, 0.0015, 0.003, profile=self.source_profile,
+            source_models_dir or models_dir, self.output, vessel_name, 0.0015, 0.003,
+            profile=self.source_profile,
         )
         self.receiver_model, self.receiver_cup = hollow_model(
             models_dir, self.output, "beaker", 0.003, 0.004,
@@ -95,25 +102,30 @@ class StationSphExport:
         self.plant_context = plant_context
         self.source_body = source_body
         self.start_time = simulator.get_context().get_time()
-        source = plant.EvalBodyPoseInWorld(plant_context, source_body)
         receiver = plant.EvalBodyPoseInWorld(plant_context, receiver_body)
-        for name, pose in (("source", source), ("receiver", receiver)):
-            if not np.allclose(pose.rotation().matrix(), np.eye(3), atol=1e-6, rtol=0):
-                raise ValueError(f"SPH requires an identity initial {name} rotation")
-        self.configure(receiver.translation())
+        self.configure(receiver.translation(), receiver.rotation().ToQuaternion().wxyz())
         self.record_pose()
 
-    def configure(self, receiver_origin):
+    def configure(self, receiver_origin, receiver_quaternion=(1., 0., 0., 0.)):
         fill = {
             "test_tube": ((-.007, -.007, .009), (.007, .007, .095)),
             "erlenmeyer": ((-.014, -.014, .010), (.014, .014, .045)),
             "boiling_flask": ((-.015, -.015, .020), (.015, .015, .065)),
         }
-        lo, hi = fill[self.vessel_name]
+        if self.vessel_name in fill:
+            lo, hi = fill[self.vessel_name]
+        else:
+            profile = self.source_profile
+            low = profile.inner[0][0] + .005
+            high = min(low + .086, .60 * profile.inner[-1][0])
+            heights = [low, high, *(z for z, _ in profile.inner if low < z < high)]
+            half = min(.007, .55 * min(profile.radius_at(heights)))
+            lo, hi = (-half, -half, low), (half, half, high)
         cup = {"source_cup": self.source_cup} if self.source_cup is not None else {}
         self.config = PouringConfig(
             **cup, source_profile=self.source_profile, receiver_cup=self.receiver_cup,
-            receiver_origin=receiver_origin, fill_start=lo, fill_end=hi,
+            receiver_origin=receiver_origin, receiver_quaternion_wxyz=receiver_quaternion,
+            fill_start=lo, fill_end=hi,
             particle_radius=.0015, max_time_step=.001,
         )
 
@@ -124,12 +136,35 @@ class StationSphExport:
         pose = self.plant.EvalBodyPoseInWorld(self.plant_context, self.source_body)
         self.recorder.record(time, "source", pose)
 
-    def save(self, *, motion_completed=None):
+    def save(self, *, motion_completed=None, pickup_success=None):
         trajectory = self.recorder.save(self.output / "source_trajectory.csv")
         (self.output / "cups.json").write_text(json.dumps(asdict(self.config), indent=2) + "\n")
         if motion_completed is not None:
-            status = {"motion_completed": motion_completed}
+            status = {
+                "motion_completed": motion_completed,
+                "pickup_success": pickup_success,
+                "trajectory_replayable": len(self.recorder.rows) >= 2,
+            }
             (self.output / "station_motion.json").write_text(json.dumps(status, indent=2) + "\n")
+        if self.metadata is not None:
+            values = self.recorder.rows[0]
+            snapshot = {
+                **self.metadata,
+                "source_frame": "Drake body frame at outer bottom center, local +Z toward rim",
+                "pose_convention": "X_WB, world XYZ meters and wxyz quaternion",
+                "initial_source_xyz_m": values[2:5],
+                "initial_source_quaternion_wxyz": values[5:],
+                "receiver_origin": self.config.receiver_origin,
+                "receiver_quaternion_wxyz": self.config.receiver_quaternion_wxyz,
+                "receiver_cup": self.config.receiver_cup,
+                "fill_box_m": [self.config.fill_start, self.config.fill_end],
+                "nominal_fill_box_volume_ml": float(np.prod(
+                    np.subtract(self.config.fill_end, self.config.fill_start)) * 1e6),
+                "recording_start": "before approach",
+                "drake_start_time_s": self.start_time,
+                "csv_time_origin_s": values[0],
+            }
+            (self.output / "vessel_geometry.json").write_text(json.dumps(snapshot, indent=2) + "\n")
         print(f"Exported {len(self.recorder.rows)} source poses to {trajectory}")
 
 

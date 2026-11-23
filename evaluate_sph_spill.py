@@ -31,7 +31,7 @@ def classify(positions, source_origin, source_rotation, *, config=DEFAULT_CONFIG
     if len(positions) == 0 or not np.isfinite(positions).all():
         raise RuntimeError("SPH returned empty or non-finite particle positions")
     source_local = (positions - source_origin) @ source_rotation
-    receiver_local = positions - config.receiver_origin
+    receiver_local = (positions - config.receiver_origin) @ config.receiver_rotation().as_matrix()
     in_source = (config.source_profile.contains(source_local) if config.source_profile
                  else inside_cup(source_local, config.source_cup[:3], bottom=config.source_cup[3]))
     in_receiver = (config.receiver_profile.contains(receiver_local) if config.receiver_profile
@@ -62,7 +62,7 @@ def evaluate(
     duration: float | None = None,
     *,
     hold_source: bool = False,
-    settle_duration: float = 0.0,
+    settle_duration: float | None = None,
     config: PouringConfig = DEFAULT_CONFIG,
     diagnostics: bool = False,
     export_fps: float = 30.,
@@ -77,10 +77,6 @@ def evaluate(
     """
     from sph_drake_replay import DrakeReplay, prepare_animated_scene, replay_scene
 
-    settle_duration = float(settle_duration)
-    if not np.isfinite(settle_duration) or settle_duration < 0:
-        raise ValueError("Settling duration must be finite and nonnegative")
-
     output = Path(mkdtemp(prefix="sph-evaluation-")) if output is None else Path(output).resolve()
     if output.exists() and (not output.is_dir() or any(output.iterdir())):
         raise ValueError("output must be a new or empty directory")
@@ -90,11 +86,13 @@ def evaluate(
         trajectory = trajectory.save(output / "input_trajectory.csv")
 
     replay = DrakeReplay(trajectory, hold_source=hold_source)
-    if replay.times[0] != 0:
-        raise ValueError("The Drake source trajectory must start at t=0")
     _, initial_rotation = replay.pose(0)
-    if not np.allclose(initial_rotation, np.eye(3), atol=1e-6, rtol=0):
-        raise ValueError("The generated fill requires an identity initial source rotation")
+    if settle_duration is None:
+        tilted = not np.allclose(initial_rotation[:, 2], [0., 0., 1.], atol=1e-6)
+        settle_duration = 0.25 if tilted else 0.
+    settle_duration = float(settle_duration)
+    if not np.isfinite(settle_duration) or settle_duration < 0:
+        raise ValueError("Settling duration must be finite and nonnegative")
     duration = float(replay.times[-1] if duration is None else duration)
     if not np.isfinite(duration) or not 0 < duration <= replay.times[-1]:
         raise ValueError("Duration must be positive and within the exported trajectory")
@@ -112,7 +110,10 @@ def evaluate(
     options = {"headless": True} if export_fps == 0 else {}
     if diagnostics:
         receiver = config.receiver_profile or cylindrical_profile(config.receiver_cup)
-        options.update(diagnostics=True, diagnostic_receiver=(config.receiver_origin, receiver.contains))
+        receiver_rotation = config.receiver_rotation().as_matrix()
+        options.update(diagnostics=True, diagnostic_receiver=(
+            config.receiver_origin, lambda local: receiver.contains(local @ receiver_rotation),
+        ))
     with _REPLAY_LOCK:
         time, pose_time, positions = replay_scene(
             animated_scene, replay, duration, output, settle_duration=settle_duration, **options,
@@ -127,6 +128,7 @@ def evaluate(
         "requested_duration_s": duration,
         "requested_settle_duration_s": settle_duration,
         "simulation_time_s": time,
+        "input_time_origin_s": replay.input_time_origin_s,
         "source_held_fixed": hold_source,
         "applied_source_pose_time_s": 0.0 if hold_source else pose_time,
         **classify(positions, origin, rotation, config=config),
@@ -154,8 +156,8 @@ def main():
     )
     parser.add_argument("--duration", type=float, help="Default is the trajectory end time")
     parser.add_argument(
-        "--settle-duration", type=float, default=0.0, metavar="SECONDS",
-        help="Hold the source fixed before replaying the full requested duration",
+        "--settle-duration", type=float, metavar="SECONDS",
+        help="Hold source fixed before replay (default: 0.25 s for a tilted start, otherwise zero)",
     )
     parser.add_argument("--hold-source", action="store_true", help="Run a fixed-vessel control")
     export = parser.add_mutually_exclusive_group()

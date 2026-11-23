@@ -76,6 +76,44 @@ PYTHONPATH="$PWD/.venv/splishsplash/build/lib" OMP_NUM_THREADS=1 \
 
 The controlled trajectory rotates the source around its mouth to 120° and holds it there. It bypasses robot grasping to isolate fluid outflow. The 3-second tube replay produced visible outflow and finished with 332 of 448 particles in the receiver, 116 outside both vessels, and zero in the source. These are provisional particle-center counts. `spill_report.json` marks spill measurement as unvalidated.
 
+### Run Shasha’s generated vessels with manual or ML grasps
+
+Use the existing SPH build. Fetch Shasha’s branch to make the pinned generator, feature code, and dataset available locally. The command reads those files through Git and leaves your checkout on Wyatt’s branch.
+
+```bash
+git fetch origin shasha/ml-grasp-dataset
+.venv/bin/python -m pip install 'manipulation==2026.10.17' 'pandas==3.1.1' 'scikit-learn==1.9.1'
+export PYTHONPATH="$PWD/.venv/splishsplash/build/lib"
+export OMP_NUM_THREADS=1
+
+.venv/bin/python run_ml_sph_pour.py \
+  --family cylinder --grasp-mode ml \
+  --output sph_pouring_trial/generated_cylinder_01 --export-fps 12
+
+.venv/bin/python run_ml_sph_pour.py \
+  --family hourglass --grasp-mode manual --grasp-height 0.08 \
+  --output sph_pouring_trial/generated_hourglass_01 --duration 0.25
+```
+
+The generator supports `cylinder`, `conical`, `round_bottom`, `shouldered`, `inverted_taper`, `funnel`, `goblet`, `flared_rim`, `waisted_bottle`, `hourglass`, `stepped`, `double_bulge`, and `collared`. Use `--profile-json PATH` in place of `--family` to supply a snapshot with `family`, `height_m`, `mass_kg`, and `normalized_height_radius_m`. The profile is a list of pairs `[fractional_height, radius_in_meters]`, ordered strictly from height 0 to 1. Shasha’s stepped family uses short tapered transitions. The adapter preserves the exterior knots and 48 angular facets, closes the bottom, and offsets the inner profile radially by `--wall`. Use `--floor` to change the base thickness. Profiles that leave no cavity are rejected.
+
+ML mode uses the current 450-trial diversified dataset `diverse_n10_p1_20261122_103654_seed84210` and Shasha’s random-forest implementation at the pinned upstream commit. It reconstructs numerical features from each exact profile, trains on the archived trials, filters candidates by the upstream width limit, and chooses the highest-scoring candidate. Exact matching training silhouettes are excluded for custom profile snapshots. This score chooses a grasp height. Drake then executes the motion, and SPlisHSPlasH replays the measured poses.
+
+Each run writes `drake/source_trajectory.csv`, `drake/vessel_geometry.json`, `drake/cups.json`, and `drake/station_motion.json` under the output directory. Check the latter for pickup, completed motion, and replayability. A slip or failed pickup can still produce a measured prefix. SPH results are under `sph/`. Add `--drake-only` to export without fluid evaluation, `--headless` for a report without frames, or `--duration` for a short prefix. An external trajectory never requires rerunning Drake:
+
+```bash
+run=sph_pouring_trial/generated_cylinder_01
+.venv/bin/python evaluate_sph_spill.py --station-export "$run/drake" \
+  --scene-dir sph_pouring_trial/station_cache --export-fps 12 --output "${run}_replay"
+.venv/bin/python visualize_pour.py --fluid-output "${run}_replay" --no-robot
+```
+
+**Recorded frames and tilted starts.** Shasha’s original recorder samples `EvalBodyPoseInWorld` after pickup, so the pose is `X_WB` and the earlier fluid state is unknown. The generated link origin is the outer bottom center with local +Z toward the rim. The fresh workflow records from before approach through the measured endpoint. For either recorder, match geometry and receiver metadata to the actual run. The evaluator places the hollow source at the initial measured pose and rotates the source-local fill into world coordinates. A tilted start holds that same pose for 0.25 s by default to let gravity redistribute the freshly seeded particles. Use `--settle-duration` to adjust it. The dwell adds solver time and preserves all recorded poses. For old post-pickup CSVs, this initializes a new fill at the beginning of the recorded segment and cannot recover any earlier spill. Use the replay tool for tilted scene JSON, since it applies the local fill transform to the sampled particles before solving.
+
+The default generated cylinder with the ML-selected 0.09 m grasp completed a 58 s measured-motion replay in about 251 s with cached maps and 12 fps export. The final counts were 26 in source, 328 in receiver and 62 outside of 416.
+
+The saved `shared_trajectories/shasha/source_trajectory.csv` has a valid tilted first pose but no confirmed matching geometry snapshot. The backup contains multiple plausible vessels. Use the external CSV command with a `cups.json` from the verified source profile and receiver setup if that pairing is recovered. Outside-both counts include particles still in flight at the endpoint and remain provisional.
+
 ### Fast ML evaluation and visual evaluation
 
 Rerun `bash scripts/setup_sph.sh` once to install the viscosity fix. Reuse the existing volume-map cache. For a new experiment, point `run_dir` at the directory exported by `visualize_station.py`.
@@ -137,7 +175,7 @@ The default template now uses a CFL factor of 0.125. At 2 m/s and a 3 mm particl
 
 ### Evaluate a trajectory from your own Drake planner or ML script
 
-Use `TrajectoryRecorder` from `drake_trajectory_export.py`. After each simulator advance, record the measured vessel pose with `recorder.record(t, "source", X_WC)`, then save it as `candidate.csv`. Supply meters in the Z-up world frame, strictly increasing times starting at zero, and an identity initial rotation. If logging gripper poses, compose with the gripper-to-vessel transform first.
+Use `TrajectoryRecorder` from `drake_trajectory_export.py`. After each simulator advance, record the measured vessel pose with `recorder.record(t, "source", X_WC)`, then save it as `candidate.csv`. Supply meters in the Z-up world frame and strictly increasing timestamps. Quaternions use wxyz order and are normalized on read. Replay and the viewer subtract the first timestamp to obtain elapsed time. The scene manifest and spill report retain the original time origin. If logging gripper or center-of-mass poses, compose with the fixed transform from that frame to the vessel bottom-center frame first.
 
 ```bash
 # Choose a matching geometry bundle, or supply your own cups.json.
@@ -149,7 +187,7 @@ PYTHONPATH="$PWD/.venv/splishsplash/build/lib" OMP_NUM_THREADS=1 \
 .venv/bin/python visualize_pour.py --fluid-output sph_pouring_trial/candidate_01 --no-robot
 ```
 
-Use the generated geometry only if the local vessel frame, source shape, receiver shape, and world receiver placement match your experiment. Edit `receiver_origin` for a different world placement. The upright stationary receiver uses the same bottom-center frame convention as the source. For cylindrical vessels use `source_cup` and `receiver_cup`. For other axisymmetric shapes use `source_profile` and/or `receiver_profile`. Each profile takes precedence over its corresponding cylinder dimensions and describes both the fluid boundary and classifier cavity. Arbitrary non-axisymmetric meshes are outside this interface.
+Use the generated geometry only if the local vessel frame, source shape, receiver shape, and world receiver placement match your experiment. Edit `receiver_origin` for a different world placement. The stationary receiver uses the same bottom-center frame convention as the source. Set `receiver_quaternion_wxyz` for a rotated receiver. Its default is identity. For cylindrical vessels use `source_cup` and `receiver_cup`. For other axisymmetric shapes use `source_profile` and/or `receiver_profile`. Each profile takes precedence over its corresponding cylinder dimensions and describes both the fluid boundary and classifier cavity. Arbitrary non-axisymmetric meshes are outside this interface.
 
 The following is an example profile configuration for a conical flask source and cylindrical default receiver. Each pair is `[z, radius]` in meters, ordered from base to rim. The outer wall starts at zero, the cavity floor is above it, and both profiles end at the same rim height. The inner wall must stay strictly within the outer wall and the complete initial fill box must fit in the cavity.
 

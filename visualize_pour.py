@@ -56,6 +56,7 @@ def source_poses(trajectory, pose_times):
         raise ValueError("Expected at least two source pose samples")
     times, values = zip(*samples)
     values = np.asarray(values)
+    times = np.asarray(times) - times[0]
     interpolation = PoseInterpolation(times, values[:, :3], values[:, [4, 5, 6, 3]])
     xyz, rotations = interpolation.pose(pose_times)
     return list(zip(rotations, xyz))

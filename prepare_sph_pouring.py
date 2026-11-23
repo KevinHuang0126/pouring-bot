@@ -3,14 +3,16 @@
 The generated Bender2019 scene is the initial state for sph_drake_replay.py.
 """
 import argparse
-import csv
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
 
 import numpy as np
+from scipy.spatial.transform import Rotation
+
+from drake_trajectory_export import load_trajectory
 
 
 SOURCE_CUP = (0.035, 0.003, 0.110)
@@ -29,8 +31,11 @@ class VesselProfile:
 
     outer: tuple[tuple[float, float], ...]
     inner: tuple[tuple[float, float], ...]
+    segments: int = field(default=CUP_SEGMENTS, repr=False)
 
     def __post_init__(self):
+        if not isinstance(self.segments, int) or self.segments < 3:
+            raise ValueError("A profile requires at least three angular segments")
         for name in ("outer", "inner"):
             rings = tuple(tuple(float(v) for v in ring) for ring in getattr(self, name))
             if (len(rings) < 2 or any(len(r) != 2 for r in rings)
@@ -52,7 +57,7 @@ class VesselProfile:
 
     def contains(self, points):
         x, y, z = np.asarray(points).T
-        half_segment = np.pi / CUP_SEGMENTS
+        half_segment = np.pi / self.segments
         angle = np.arctan2(y, x) % (2 * half_segment) - half_segment
         return ((np.hypot(x, y) * np.cos(angle) < self.radius_at(z) * np.cos(half_segment))
                 & (z > self.inner[0][0]) & (z < self.inner[-1][0]))
@@ -78,6 +83,7 @@ class PouringConfig:
     max_time_step: float | None = None
     source_profile: VesselProfile | None = None
     receiver_profile: VesselProfile | None = None
+    receiver_quaternion_wxyz: tuple[float, ...] = (1., 0., 0., 0.)
 
     def __post_init__(self):
         for name, size in (("source_cup", 4), ("receiver_cup", 4),
@@ -86,6 +92,11 @@ class PouringConfig:
             if len(values) != size or not all(map(math.isfinite, values)):
                 raise ValueError(f"{name} requires {size} finite values in meters")
             object.__setattr__(self, name, values)
+
+        q = np.asarray(self.receiver_quaternion_wxyz, dtype=float)
+        if q.shape != (4,) or not np.isfinite(np.linalg.norm(q)) or not np.linalg.norm(q):
+            raise ValueError("Receiver quaternion must have four finite nonzero-norm components")
+        object.__setattr__(self, "receiver_quaternion_wxyz", tuple(q / np.linalg.norm(q)))
 
         for cup in (self.source_cup, self.receiver_cup):
             if min(cup) <= 0 or cup[3] >= cup[2]:
@@ -119,6 +130,10 @@ class PouringConfig:
         if not profile.contains(corners).all():
             raise ValueError("Initial fill bounds must fit inside the source cavity")
 
+    def receiver_rotation(self):
+        return Rotation.from_quat(self.receiver_quaternion_wxyz, scalar_first=True)
+
+
 DEFAULT_CONFIG = PouringConfig()
 
 
@@ -138,8 +153,9 @@ def cup_mesh(path, inner, wall, height, segments=CUP_SEGMENTS, bottom=CUP_BOTTOM
     profile_mesh(path, cylindrical_profile((inner, wall, height, bottom)), segments)
 
 
-def profile_mesh(path, profile, segments=CUP_SEGMENTS):
+def profile_mesh(path, profile, segments=None):
     """Generate the closed solid shell with an uncapped cavity opening."""
+    segments = profile.segments if segments is None else segments
     rings = (*profile.outer, *reversed(profile.inner))
     angles = [2 * math.pi * i / segments for i in range(segments)]
     vertices = [(radius * math.cos(a), radius * math.sin(a), z)
@@ -168,10 +184,17 @@ def profile_mesh(path, profile, segments=CUP_SEGMENTS):
 def write_boundary(output, name, profile, dimensions, default):
     if profile is None:
         return write_cup(output, name, dimensions, default)
-    digest = sha256(repr(profile).encode()).hexdigest()[:16]
+    key = repr(profile) if profile.segments == CUP_SEGMENTS else repr((profile, profile.segments))
+    digest = sha256(key.encode()).hexdigest()[:16]
     path = output / f"{name}_profile_{digest}.obj"
     profile_mesh(path, profile)
     return path
+
+
+def scene_rotation(rotation):
+    vector = rotation.as_rotvec()
+    angle = np.linalg.norm(vector)
+    return {"rotationAngle": angle, "rotationAxis": (vector / angle).tolist() if angle else [0, 1, 0]}
 
 
 def prepare_scene(trajectory, output, template, *, settings=DEFAULT_CONFIG, export_fps=30.0, cfl_factor=None):
@@ -182,14 +205,10 @@ def prepare_scene(trajectory, output, template, *, settings=DEFAULT_CONFIG, expo
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     trajectory = Path(trajectory).resolve()
-    with trajectory.open(newline='') as f:
-        rows = list(csv.DictReader(f))
-    source = [r for r in rows if r['body'] == 'source']
+    source = load_trajectory(trajectory).get("source", [])
     if len(source) < 2:
-        raise ValueError('Expected at least two Drake source pose samples')
-    times = [float(r['time_s']) for r in source]
-    if any(b <= a for a,b in zip(times,times[1:])):
-        raise ValueError('Trajectory times must be strictly increasing')
+        raise ValueError("Expected at least two Drake source pose samples")
+    times = [t for t, _ in source]
     (output/'source_trajectory.csv').write_text(trajectory.read_text())
     source_mesh = write_boundary(output, "source", settings.source_profile,
                                  settings.source_cup, DEFAULT_CONFIG.source_cup)
@@ -206,27 +225,31 @@ def prepare_scene(trajectory, output, template, *, settings=DEFAULT_CONFIG, expo
     if settings.max_time_step is not None:
         config['timeStepSize'] = settings.max_time_step
         config['cflMaxTimeStepSize'] = settings.max_time_step
-    first = source[0]
-    origin = [float(first[k]) for k in ('x_m','y_m','z_m')]
+    first = source[0][1]
+    origin = first[:3]
+    source_rotation = Rotation.from_quat(first[3:], scalar_first=True)
+    local_fill = source_rotation.magnitude() > 1e-12
+    fill_origin = np.zeros(3) if local_fill else origin
     config['cameraPosition'] = [0.4, -0.5, 0.35]
     config['cameraLookat'] = [0.06, 0, 0.12]
     scene = {'Configuration':config, 'Materials':template['Materials'],
              'RigidBodies':[
-                 {'geometryFile':str(source_mesh), 'translation':origin,
-                  'rotationAxis':[0,1,0], 'rotationAngle':0, 'scale':[1,1,1],
+                 {'geometryFile':str(source_mesh), 'translation':origin.tolist(),
+                  **scene_rotation(source_rotation), 'scale':[1,1,1],
                   'isDynamic':False, 'isAnimated':False,
                   'mapResolution':[48,48,48]},
                  {'geometryFile':str(receiver_mesh),
-                  'translation':settings.receiver_origin, 'rotationAxis':[0,1,0],
-                  'rotationAngle':0, 'scale':[1,1,1], 'isDynamic':False,
+                  'translation':settings.receiver_origin, **scene_rotation(settings.receiver_rotation()), 'scale':[1,1,1], 'isDynamic':False,
                   'mapResolution':[48,48,48]}],
              'FluidBlocks':[{'denseMode':0,
-                             'start':[p + d for p, d in zip(origin, settings.fill_start)],
-                             'end':[p + d for p, d in zip(origin, settings.fill_end)]}]}
+                             'start':[p + d for p, d in zip(fill_origin, settings.fill_start)],
+                             'end':[p + d for p, d in zip(fill_origin, settings.fill_end)]}]}
+    if local_fill:
+        scene['initialFillFrame'] = 'source'
     (output/'scene_static.json').write_text(json.dumps(scene,indent=2)+'\n')
     (output/'trial_manifest.json').write_text(json.dumps({
         'trajectory': 'source_trajectory.csv', 'scene':'scene_static.json',
-        'duration_s':times[-1]-times[0],
+        'duration_s':times[-1]-times[0], 'input_time_origin_s':times[0],
         'status':'PREPARATION_ONLY_NO_MOVING_BOUNDARY_REPLAY',
         'note':'Static scene is a geometry/fluid smoke test, not a pouring result.'},indent=2)+'\n')
     return output / 'scene_static.json'

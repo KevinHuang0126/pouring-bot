@@ -82,11 +82,12 @@ def load_trajectory(filename):
             quaternion = values[3:]
             norm = np.linalg.norm(quaternion)
 
-            if abs(norm - 1.0) > 1e-4:
+            if not np.isfinite(norm) or norm == 0:
                 raise ValueError(
                     f"Invalid quaternion for {body}: norm={norm}"
                 )
 
+            values[3:] /= norm
             trajectories[body].append(
                 (float(row["time_s"]), values)
             )
@@ -94,7 +95,7 @@ def load_trajectory(filename):
     for body, samples in trajectories.items():
         times = np.array([sample[0] for sample in samples])
 
-        if len(times) > 1 and not np.all(np.diff(times) > 0):
+        if not np.isfinite(times).all() or not np.all(np.diff(times) > 0):
             raise ValueError(
                 f"Non-increasing timestamps for {body}"
             )

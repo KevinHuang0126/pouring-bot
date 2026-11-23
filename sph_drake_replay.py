@@ -20,47 +20,26 @@ from pathlib import Path
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from drake_trajectory_export import PoseInterpolation
+from drake_trajectory_export import PoseInterpolation, load_trajectory as load_recorded_poses
 
 import pysplishsplash as sph
 
 
 def load_trajectory(path):
-    times = []
-    positions = []
-    quaternions = []
-
-    with open(path, newline="") as f:
-        for row in csv.DictReader(f):
-            if row["body"] != "source":
-                continue
-
-            times.append(float(row["time_s"]))
-            positions.append([
-                float(row[k]) for k in ("x_m", "y_m", "z_m")
-            ])
-
-            # CSV: wxyz; SciPy: xyzw
-            quaternions.append([
-                float(row[k]) for k in ("qx", "qy", "qz", "qw")
-            ])
-
-    times = np.asarray(times)
-    positions = np.asarray(positions)
-    quaternions = np.asarray(quaternions)
-
-    if len(times) < 2 or not np.isfinite(times).all() or not np.all(np.diff(times) > 0):
-        raise ValueError("Trajectory needs finite, increasing timestamps")
-    if not np.isfinite(positions).all() or not np.isfinite(quaternions).all():
-        raise ValueError("Trajectory poses must be finite")
-
-    return times, PoseInterpolation(times, positions, quaternions)
+    samples = load_recorded_poses(path).get("source", [])
+    if len(samples) < 2:
+        raise ValueError("Expected at least two source pose samples")
+    stamps, values = zip(*samples)
+    stamps = np.asarray(stamps)
+    values = np.asarray(values)
+    times = stamps - stamps[0]
+    return float(stamps[0]), times, PoseInterpolation(times, values[:, :3], values[:, [4, 5, 6, 3]])
 
 
 class DrakeReplay:
     def __init__(self, trajectory, *, hold_source=False):
         self.hold_source = hold_source
-        self.times, self.interpolation = load_trajectory(trajectory)
+        self.input_time_origin_s, self.times, self.interpolation = load_trajectory(trajectory)
 
     def pose(self, t):
         return self.interpolation.pose(self.times[0] if self.hold_source else t)
@@ -235,7 +214,8 @@ def replay_scene(scene_path, replay, duration, output, *, settle_duration=0.0, o
         raise ValueError("Settling duration must be finite and nonnegative")
     trace = StepDiagnostics(Path(output) / "step_diagnostics.csv") if diagnostics else None
     clock_start = perf_counter()
-    parameters = json.loads(Path(scene_path).read_text())["Configuration"]
+    scene = json.loads(Path(scene_path).read_text())
+    parameters = scene["Configuration"]
     vtk_enabled = not headless and parameters.get("enableVTKExport", True)
     simulator = sph.Exec.SimulatorBase()
     simulator.init(
@@ -252,6 +232,19 @@ def replay_scene(scene_path, replay, duration, output, *, settle_duration=0.0, o
         boundary_simulator = simulator.getBoundarySimulator()
         if not isinstance(boundary_simulator, sph.Exec.StaticBoundarySimulator):
             raise RuntimeError("Replay requires a StaticBoundarySimulator")
+
+        if scene.get("initialFillFrame") == "source":
+            # Native FluidBlocks sample an axis-aligned lattice. Move both
+            # position fields before deferred sorting or any force evaluation.
+            origin, rotation = replay.pose(0.)
+            for j in range(simulation.numberOfFluidModels()):
+                model = simulation.getFluidModel(j)
+                n = model.numActiveParticles()
+                for field in ("position", "position0"):
+                    positions = np.asarray(model.getFieldBuffer(field))[:n]
+                    positions[:] = positions @ rotation.T + origin
+        initial_count = sum(simulation.getFluidModel(j).numActiveParticles()
+                            for j in range(simulation.numberOfFluidModels()))
 
         # The binding exposes deferred initialization through runSimulation().
         # Start past a temporary stop time so it initializes without stepping.
@@ -372,6 +365,8 @@ def replay_scene(scene_path, replay, duration, output, *, settle_duration=0.0, o
             "diagnostics_s": diagnostics_seconds,
             "vtk_frames": len(fluid_frames),
         }
+        if len(positions) != initial_count:
+            raise RuntimeError(f"Particle count changed from {initial_count} to {len(positions)}")
         (output / "replay_timing.json").write_text(json.dumps(metrics, indent=2) + "\n")
         return tm.getTime(), pose_time, positions
     finally:

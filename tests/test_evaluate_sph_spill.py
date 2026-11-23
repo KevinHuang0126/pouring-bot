@@ -85,7 +85,7 @@ class EvaluatorInterfaceTest(unittest.TestCase):
             receiver_origin=(0.2, 0, 0),
             fill_end=(0.02, 0.02, 0.06),
         )
-        replay = SimpleNamespace(times=[0, 0.1], pose=lambda _: (origin, np.eye(3)))
+        replay = SimpleNamespace(input_time_origin_s=0., times=[0, 0.1], pose=lambda _: (origin, np.eye(3)))
         binding = SimpleNamespace(
             DrakeReplay=Mock(return_value=replay),
             prepare_animated_scene=Mock(),

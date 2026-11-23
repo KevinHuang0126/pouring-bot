@@ -857,14 +857,14 @@ def localize_source_vessel(
 # MAIN SIMULATION
 # ==================================================
 
-def main():
+def main(argv=None, *, capture=None, source_xy=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--export-dir", type=Path, help="Export measured poses and matched SPH config")
     parser.add_argument("--export-partial", action="store_true",
                         help="Write the measured prefix if the planner aborts")
     parser.add_argument("--vessel", choices=VESSELS, help="Select a fixed source vessel")
     parser.add_argument("--randomize-position", action="store_true", help="Randomize source position")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     exporting = args.export_dir is not None
     if args.export_partial and not exporting:
         parser.error("--export-partial requires --export-dir")
@@ -873,8 +873,7 @@ def main():
     use_camera = USE_CAMERA_LOCALIZATION and not exporting
     randomize_position = args.randomize_position or (RANDOMIZE_POSITION and not exporting)
     randomize_vessel = RANDOMIZE_VESSEL and not exporting and args.vessel is None
-    capture = None
-    if exporting:
+    if exporting and capture is None:
         from station_sph_export import StationSphExport
 
         capture = StationSphExport(args.export_dir, PACKAGE_XML.parent, args.vessel or "test_tube")
@@ -933,9 +932,7 @@ def main():
 
     else:
 
-        source_x = FIXED_SOURCE_X
-
-        source_y = FIXED_SOURCE_Y
+        source_x, source_y = source_xy or (FIXED_SOURCE_X, FIXED_SOURCE_Y)
 
     grip_force_limit = (
         GRIP_FORCE_LIMITS[
@@ -1757,10 +1754,10 @@ def main():
 
     if capture:
         if not pour_success:
-            if not args.export_partial or len(capture.recorder.rows) < 2:
+            if not args.export_partial:
                 raise RuntimeError("Station motion aborted before completing the pour")
             print("Exporting the measured prefix of the aborted motion.")
-        capture.save(motion_completed=pour_success)
+        capture.save(motion_completed=pour_success, pickup_success=pickup_success)
     else:
         input("\nPress Enter to close.")
 
