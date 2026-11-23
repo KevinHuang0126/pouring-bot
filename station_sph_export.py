@@ -9,7 +9,7 @@ from xml.etree import ElementTree as ET
 import numpy as np
 
 from drake_trajectory_export import TrajectoryRecorder
-from prepare_sph_pouring import PouringConfig, VesselProfile, cup_mesh, profile_mesh
+from prepare_sph_pouring import PouringConfig, VesselProfile, cup_mesh, initial_profile_fill, profile_mesh
 
 
 ET.register_namespace("drake", "http://drake.mit.edu")
@@ -77,12 +77,14 @@ class StationSphExport:
     """Capture the whole dry-station run from the initial upright source pose."""
 
     def __init__(self, output, models_dir, vessel_name="test_tube", *,
-                 source_profile=None, source_models_dir=None, metadata=None):
+                 source_profile=None, source_models_dir=None, metadata=None, fill_fraction=None):
         self.output = Path(output).resolve()
         self.output.mkdir(parents=True, exist_ok=True)
         if any(self.output.iterdir()):
             raise ValueError("Station export directory must be empty")
         self.metadata = metadata
+        self.fill_fraction = fill_fraction
+        self.initial_fill = None
         self.source_profile = source_profile
         if source_profile is None and vessel_name != "test_tube":
             self.source_profile = flask_profile(vessel_name)
@@ -112,22 +114,26 @@ class StationSphExport:
             "erlenmeyer": ((-.014, -.014, .010), (.014, .014, .045)),
             "boiling_flask": ((-.015, -.015, .020), (.015, .015, .065)),
         }
-        if self.vessel_name in fill:
+        bounds = {}
+        if self.fill_fraction is None:
             lo, hi = fill[self.vessel_name]
-        else:
-            profile = self.source_profile
-            low = profile.inner[0][0] + .005
-            high = min(low + .086, .60 * profile.inner[-1][0])
-            heights = [low, high, *(z for z, _ in profile.inner if low < z < high)]
-            half = min(.007, .55 * min(profile.radius_at(heights)))
-            lo, hi = (-half, -half, low), (half, half, high)
+            bounds = {"fill_start": lo, "fill_end": hi}
         cup = {"source_cup": self.source_cup} if self.source_cup is not None else {}
         self.config = PouringConfig(
             **cup, source_profile=self.source_profile, receiver_cup=self.receiver_cup,
             receiver_origin=receiver_origin, receiver_quaternion_wxyz=receiver_quaternion,
-            fill_start=lo, fill_end=hi,
+            **bounds, fill_fraction=self.fill_fraction,
             particle_radius=.0015, max_time_step=.001,
         )
+
+        if self.fill_fraction is not None:
+            _, self.initial_fill = initial_profile_fill(
+                self.config.source_cavity(), self.fill_fraction, self.config.particle_radius,
+            )
+            metrics = self.initial_fill
+            print(f"SPH initial fill: {metrics['initialized_particle_count']} particles, "
+                  f"{metrics['estimated_initialized_volume_ml']:.3f} mL "
+                  f"for a target of {metrics['target_volume_ml']:.3f} mL")
 
     def record_pose(self):
         time = self.simulator.get_context().get_time() - self.start_time
@@ -145,6 +151,8 @@ class StationSphExport:
                 "pickup_success": pickup_success,
                 "trajectory_replayable": len(self.recorder.rows) >= 2,
             }
+            if self.initial_fill is not None:
+                status["initial_fill"] = self.initial_fill
             (self.output / "station_motion.json").write_text(json.dumps(status, indent=2) + "\n")
         if self.metadata is not None:
             values = self.recorder.rows[0]
@@ -157,9 +165,7 @@ class StationSphExport:
                 "receiver_origin": self.config.receiver_origin,
                 "receiver_quaternion_wxyz": self.config.receiver_quaternion_wxyz,
                 "receiver_cup": self.config.receiver_cup,
-                "fill_box_m": [self.config.fill_start, self.config.fill_end],
-                "nominal_fill_box_volume_ml": float(np.prod(
-                    np.subtract(self.config.fill_end, self.config.fill_start)) * 1e6),
+                "initial_fill": self.initial_fill,
                 "recording_start": "before approach",
                 "drake_start_time_s": self.start_time,
                 "csv_time_origin_s": values[0],

@@ -10,6 +10,7 @@ from hashlib import sha256
 from pathlib import Path
 
 import numpy as np
+from scipy.optimize import brentq
 from scipy.spatial.transform import Rotation
 
 from drake_trajectory_export import load_trajectory
@@ -62,6 +63,107 @@ class VesselProfile:
         return ((np.hypot(x, y) * np.cos(angle) < self.radius_at(z) * np.cos(half_segment))
                 & (z > self.inner[0][0]) & (z < self.inner[-1][0]))
 
+    def capacity_m3(self, height=None):
+        """Integrate the actual faceted cavity up to a local Z height."""
+        z, r = np.asarray(self.inner).T
+        height = z[-1] if height is None else np.clip(height, z[0], z[-1])
+        end = np.minimum(z[1:], np.maximum(z[:-1], height))
+        end_radius = np.interp(end, z, r)
+        area_factor = self.segments * np.sin(2 * np.pi / self.segments) / 2
+        return float(area_factor / 3 * np.sum(
+            (end - z[:-1]) * (r[:-1]**2 + r[:-1] * end_radius + end_radius**2)
+        ))
+
+
+def initial_profile_fill(profile, fraction, particle_radius):
+    """Seed a cubic lattice, quantizing volume by particle count."""
+    spacing = 2 * particle_radius
+    narrow = min(r for _, r in profile.inner) <= 5 * spacing
+    # The volume-map boundary samples contribute more strongly in narrow
+    # cavities. Leave a full lattice spacing there at rest.
+    clearance = particle_radius * (2 if narrow else 1.5)
+    capacity = profile.capacity_m3()
+    target = fraction * capacity
+    bottom, rim = profile.inner[0][0], profile.inner[-1][0]
+    surface = brentq(lambda z: profile.capacity_m3(z) - target, bottom, rim)
+    extent = int(np.ceil(max(r for _, r in profile.inner) / spacing))
+    indices = np.arange(-extent, extent + 1)
+    zs = np.arange(bottom + 3 * particle_radius, rim, spacing)
+    half_segment = np.pi / profile.segments
+    limits = [
+        min(profile.radius_at([z - clearance, z + clearance,
+                               *(h for h, _ in profile.inner if z - clearance < h < z + clearance)]))
+        * np.cos(half_segment) for z in zs
+    ]
+    count = int(np.floor(target / spacing**3 + .5))
+    if not count or not len(zs):
+        raise ValueError("Requested fill is too small for the configured particle spacing")
+
+    def lattice(offset):
+        x, y = np.meshgrid(*((indices + phase) * spacing for phase in offset))
+        xy = np.column_stack((x.ravel(), y.ravel()))
+        phi = np.arctan2(xy[:, 1], xy[:, 0]) % (2 * half_segment) - half_segment
+        radial = np.linalg.norm(xy, axis=1) * np.cos(phi) + clearance
+        inside = radial[None, :] < np.asarray(limits)[:, None]
+        cumulative = np.cumsum(inside.sum(axis=1))
+        shortfall = max(0, count - cumulative[-1])
+        top = min(int(np.searchsorted(cumulative, count)), len(zs) - 1)
+        return (shortfall, top), xy, inside
+
+    # Equal-spacing grids can differ in how many centers fit near a curved
+    # wall. Keep the symmetric half-cell grid unless it is short of volume.
+    packing = lattice((.5, .5))
+    if packing[0][0] and not narrow:
+        alternatives = ((0., 0.), (0., .5), (.25, .25))
+        packing = min((packing, *map(lattice, alternatives)), key=lambda candidate: candidate[0])
+    (_, top), xy, inside = packing
+    remaining = count
+    layers = []
+    for z, layer in zip(zs[:top + 1], inside):
+        candidates = xy[layer]
+        if len(candidates) > remaining:
+            # Populate the incomplete upper layer without a directional bias.
+            candidates = candidates[np.random.default_rng(0).permutation(len(candidates))[:remaining]]
+        if len(candidates):
+            layers.append(np.column_stack((candidates, np.full(len(candidates), z))))
+            remaining -= len(candidates)
+    if not layers:
+        raise ValueError("The initial fill lattice does not fit inside the cavity")
+    points = np.concatenate(layers)
+    initialized = len(points) * spacing**3
+    if remaining:
+        raise ValueError(
+            f"Cannot seed {target * 1e6:.3f} mL at the current spacing and wall clearance. "
+            f"The lattice fits {initialized * 1e6:.3f} mL. Reduce the fill fraction."
+        )
+    return points, {
+        "usable_capacity_ml": capacity * 1e6,
+        "requested_fill_fraction": fraction,
+        "target_volume_ml": target * 1e6,
+        "initialized_particle_count": len(points),
+        "estimated_initialized_volume_ml": initialized * 1e6,
+        "estimated_realized_fill_fraction": initialized / capacity,
+        "volume_error_ml": (initialized - target) * 1e6,
+        "target_surface_height_m": surface,
+        "highest_particle_center_m": float(points[:, 2].max()),
+        "minimum_wall_clearance_m": clearance,
+        "nominal_particle_volume_ml": spacing**3 * 1e6,
+    }
+
+
+def write_particle_samples(path, points):
+    """Write resting Partio GEO samples for native FluidModels."""
+    count = len(points)
+    with path.open("w") as stream:
+        stream.write(f"PGEOMETRY V5\nNPoints {count} NPrims 1\n"
+                     "NPointGroups 0 NPrimGroups 0\n"
+                     "NPointAttrib 1 NVertexAttrib 0 NPrimAttrib 1 NAttrib 0\n"
+                     "PointAttrib\nvelocity 3 vector 0 0 0\n")
+        np.savetxt(stream, points, fmt="%.9f %.9f %.9f 1 (0 0 0)")
+        stream.write("PrimitiveAttrib\ngenerator 1 index 1 papi\n")
+        stream.write(f"Part {count} " + " ".join(map(str, range(count))))
+        stream.write(" [0]\nbeginExtra\nendExtra\n")
+
 
 def cylindrical_profile(dimensions):
     inner, wall, height, bottom = dimensions
@@ -84,6 +186,7 @@ class PouringConfig:
     source_profile: VesselProfile | None = None
     receiver_profile: VesselProfile | None = None
     receiver_quaternion_wxyz: tuple[float, ...] = (1., 0., 0., 0.)
+    fill_fraction: float | None = None
 
     def __post_init__(self):
         for name, size in (("source_cup", 4), ("receiver_cup", 4),
@@ -112,10 +215,6 @@ class PouringConfig:
                 raise ValueError("Maximum time step must be positive and finite")
             object.__setattr__(self, "max_time_step", step)
 
-        # Cubic sampling needs round(extent / particle diameter) >= 3 per axis.
-        min_extent = 5 * radius
-        if any(hi - lo <= min_extent for lo, hi in zip(self.fill_start, self.fill_end)):
-            raise ValueError(f"Initial fill must span over {min_extent:g} m on each axis")
         for name in ("source_profile", "receiver_profile"):
             profile = getattr(self, name)
             if isinstance(profile, dict):
@@ -123,12 +222,25 @@ class PouringConfig:
             elif profile is not None and not isinstance(profile, VesselProfile):
                 raise ValueError(f"{name} must be a VesselProfile or an outer/inner mapping")
 
-        profile = self.source_profile or cylindrical_profile(self.source_cup)
+        if self.fill_fraction is not None:
+            fraction = float(self.fill_fraction)
+            if not 0 < fraction <= 1:
+                raise ValueError("Initial fill fraction must be greater than zero and at most one")
+            object.__setattr__(self, "fill_fraction", fraction)
+            return
+        # Cubic block sampling needs round(extent / particle diameter) >= 3.
+        min_extent = 5 * radius
+        if any(hi - lo <= min_extent for lo, hi in zip(self.fill_start, self.fill_end)):
+            raise ValueError(f"Initial fill must span over {min_extent:g} m on each axis")
+        profile = self.source_cavity()
         lo, hi = self.fill_start, self.fill_end
         heights = [lo[2], hi[2], *(z for z, _ in profile.inner if lo[2] < z < hi[2])]
         corners = [(x, y, z) for x in (lo[0], hi[0]) for y in (lo[1], hi[1]) for z in heights]
         if not profile.contains(corners).all():
             raise ValueError("Initial fill bounds must fit inside the source cavity")
+
+    def source_cavity(self):
+        return self.source_profile or cylindrical_profile(self.source_cup)
 
     def receiver_rotation(self):
         return Rotation.from_quat(self.receiver_quaternion_wxyz, scalar_first=True)
@@ -241,11 +353,25 @@ def prepare_scene(trajectory, output, template, *, settings=DEFAULT_CONFIG, expo
                  {'geometryFile':str(receiver_mesh),
                   'translation':settings.receiver_origin, **scene_rotation(settings.receiver_rotation()), 'scale':[1,1,1], 'isDynamic':False,
                   'mapResolution':[48,48,48]}],
-             'FluidBlocks':[{'denseMode':0,
-                             'start':[p + d for p, d in zip(fill_origin, settings.fill_start)],
-                             'end':[p + d for p, d in zip(fill_origin, settings.fill_end)]}]}
-    if local_fill:
-        scene['initialFillFrame'] = 'source'
+             }
+    if settings.fill_fraction is not None:
+        points, metrics = initial_profile_fill(settings.source_cavity(), settings.fill_fraction,
+                                               settings.particle_radius)
+        samples = output / "initial_fluid.geo"
+        write_particle_samples(samples, points)
+        scene["FluidModels"] = [{
+            "id": "Fluid", "particleFile": samples.name, "translation": origin.tolist(),
+            **scene_rotation(source_rotation),
+        }]
+        scene["initialFill"] = metrics
+    else:
+        scene["FluidBlocks"] = [{
+            "denseMode": 0,
+            "start": [p + d for p, d in zip(fill_origin, settings.fill_start)],
+            "end": [p + d for p, d in zip(fill_origin, settings.fill_end)],
+        }]
+        if local_fill:
+            scene["initialFillFrame"] = "source"
     (output/'scene_static.json').write_text(json.dumps(scene,indent=2)+'\n')
     (output/'trial_manifest.json').write_text(json.dumps({
         'trajectory': 'source_trajectory.csv', 'scene':'scene_static.json',

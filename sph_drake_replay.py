@@ -246,6 +246,9 @@ def replay_scene(scene_path, replay, duration, output, *, settle_duration=0.0, o
         initial_count = sum(simulation.getFluidModel(j).numActiveParticles()
                             for j in range(simulation.numberOfFluidModels()))
 
+        if "initialFill" in scene and initial_count != scene["initialFill"]["initialized_particle_count"]:
+            raise RuntimeError("SPH loaded a different number of initial particles than prepared")
+
         # The binding exposes deferred initialization through runSimulation().
         # Start past a temporary stop time so it initializes without stepping.
         tm = sph.TimeManager.getCurrent()

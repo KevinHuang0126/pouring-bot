@@ -37,6 +37,7 @@ from grasp_planner import (
     solve_pregrasp_ik,
 )
 
+from fluid_model import DEFAULT_FILL_FRACTION
 from pour_planner import execute_pour
 
 from perception import (
@@ -864,7 +865,10 @@ def main(argv=None, *, capture=None, source_xy=None):
                         help="Write the measured prefix if the planner aborts")
     parser.add_argument("--vessel", choices=VESSELS, help="Select a fixed source vessel")
     parser.add_argument("--randomize-position", action="store_true", help="Randomize source position")
+    parser.add_argument("--fill-fraction", type=float, help="Use a profile-aware fill for SPH exports")
     args = parser.parse_args(argv)
+    if args.fill_fraction is not None and not 0 < args.fill_fraction <= 1:
+        parser.error("--fill-fraction must be greater than zero and at most one")
     exporting = args.export_dir is not None
     if args.export_partial and not exporting:
         parser.error("--export-partial requires --export-dir")
@@ -876,7 +880,8 @@ def main(argv=None, *, capture=None, source_xy=None):
     if exporting and capture is None:
         from station_sph_export import StationSphExport
 
-        capture = StationSphExport(args.export_dir, PACKAGE_XML.parent, args.vessel or "test_tube")
+        capture = StationSphExport(args.export_dir, PACKAGE_XML.parent, args.vessel or "test_tube",
+                                   fill_fraction=args.fill_fraction)
     record_pose = capture.record_pose if capture else None
 
     # ----------------------------------------------
@@ -1645,6 +1650,10 @@ def main(argv=None, *, capture=None, source_xy=None):
                 vessel_name=vessel_name,
                 record_pose=record_pose,
                 complete_tilt=exporting,
+                fill_fraction=(capture.config.fill_fraction if capture and capture.initial_fill
+                               else args.fill_fraction or DEFAULT_FILL_FRACTION),
+                usable_capacity_ml=(capture.initial_fill["usable_capacity_ml"]
+                                    if capture and capture.initial_fill else None),
             )
 
             print_gripper_force(

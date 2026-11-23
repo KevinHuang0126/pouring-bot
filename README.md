@@ -114,6 +114,38 @@ The default generated cylinder with the ML-selected 0.09 m grasp completed a 58 
 
 The saved `shared_trajectories/shasha/source_trajectory.csv` has a valid tilted first pose but no confirmed matching geometry snapshot. The backup contains multiple plausible vessels. Use the external CSV command with a `cups.json` from the verified source profile and receiver setup if that pairing is recovered. Outside-both counts include particles still in flight at the endpoint and remain provisional.
 
+### Match the planner’s initial fill in WSL
+
+Use the existing patched SPH build and cache. Generated runs default to 75% fill. This example runs the goblet’s manual grasp and checks its SPH startup.
+
+```bash
+cd ~/pouring-bot
+git fetch origin shasha/ml-grasp-dataset
+export PYTHONPATH="$PWD/.venv/splishsplash/build/lib"
+export OMP_NUM_THREADS=1
+run=sph_pouring_trial/goblet_fill75
+.venv/bin/python run_ml_sph_pour.py --family goblet --grasp-mode manual \
+  --grasp-height 0.08 --fill-fraction 0.75 --duration 0.05 --export-fps 12 --output "$run"
+.venv/bin/python visualize_pour.py --fluid-output "$run/sph" --no-robot
+```
+
+Use `--grasp-mode ml` without `--grasp-height` for model-selected grasps. Fill is separate from grasp selection. Omit `--duration` for the full replay or use `--headless` to skip frames. Check the startup particle count in the Drake log or the `initial_fill` section of the exported geometry metadata before committing to a long run.
+
+The planner and SPH use the same capacity, integrated over the actual polygonal cross-sections of the hollow mesh. The analytic free-surface height comes from inverting that integral. SPH fills horizontal layers of a wall-clipped lattice using its existing 3 mm spacing. Each particle represents 0.027 mL at this spacing, so rounding to the nearest particle gives at most 0.0135 mL volume error for a supported fill. Wall and bottom clearance leave fewer particle centers per layer. To preserve the requested volume, the seeded top layer can sit above the analytic free-surface height. Both heights are recorded. A 0.25 s fixed-pose dwell lets gravity redistribute the fill, including for tilted starts. The replay retains the measured trajectory, and `--settle-duration` controls the dwell. Requests that cannot fit at this spacing and clearance are rejected with the maximum volume the lattice can seed.
+
+The station package records the requested fraction in `cups.json` and writes the capacity, target volume, particle count, realized fraction and signed volume error under `initial_fill` in the metadata and evaluation report. Older bundles with explicit fill boxes still replay as recorded. Add `--fill-fraction` to `visualize_station.py --export-dir ...` to opt an original vessel into profile fill.
+
+| Generated shape | Particles at 25% | At 50% | At 75% |
+| --- | ---: | ---: | ---: |
+| Cylinder | 2,240 | 4,480 | 6,721 |
+| Goblet | 1,829 | 3,657 | 5,486 |
+| Waisted bottle | 2,691 | 5,381 | 8,072 |
+| Hourglass | 1,918 | 3,836 | 5,754 |
+
+The 75%-filled goblet targets 148.127 mL and initializes 148.122 mL with 5,486 particles. It retained all particles through settling and the 0.05 s replay. On the same cached, headless 0.06 s cylinder replay, the old 416-particle block took 0.26 s and the new 6,721-particle fill took 2.50 s. The [fill benchmark](benchmarks/sph_fill.csv) records the volume error, heights, particle counts and startup runtime across all 12 cases. Use a short replay to measure runtime before evaluating an entire take.
+
+The compact-cylinder verification used `--family cylinder --height 0.12 --radius-scale 0.65 --grasp-mode manual --grasp-height 0.07 --fill-fraction 0.25 --headless`. It seeded 650 particles representing 17.550 mL for a 17.5524 mL target. The cached full 58 s replay took 385 s, including its 0.25 s settling phase. All 650 particles were conserved and ended with 277 in the source, 275 in the receiver, and 98 outside both.
+
 ### Fast ML evaluation and visual evaluation
 
 Rerun `bash scripts/setup_sph.sh` once to install the viscosity fix. Reuse the existing volume-map cache. For a new experiment, point `run_dir` at the directory exported by `visualize_station.py`.

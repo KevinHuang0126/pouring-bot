@@ -7,14 +7,13 @@ import numpy as np
 from pydrake.all import RigidTransform, RotationMatrix, JacobianWrtVariable, AngleAxis
 from simple_pour_trajectory import (VESSELS, GRAVITY, compute_pour_trajectory,
     render_pour_trajectory, target_opening_error)
-from fluid_model import create_fluid_state, compute_flow_rate_ml_s, print_fluid_summary
+from fluid_model import DEFAULT_FILL_FRACTION, create_fluid_state, compute_flow_rate_ml_s, print_fluid_summary
 
 BEAKER_CENTER_XY = np.array([.72, .14])
 BEAKER_OPENING_Z = .29
 BEAKER_RADIUS = .04
 POUR_MOUTH_Z = .46
 VESSEL_CLEARANCE = .04
-FILL_FRACTION = .75
 MAX_TILT_DEG = 110.
 VESSEL_TILT_ANGLES = {'test_tube': 110., 'erlenmeyer': 110., 'boiling_flask': 110.}
 VESSEL_TILT_DURATIONS = {'test_tube': 12., 'erlenmeyer': 15., 'boiling_flask': 15.}
@@ -230,10 +229,11 @@ def command_cartesian_motion(simulator, station, station_context, plant, plant_c
 
 
 def execute_pour(simulator, station, station_context, plant, plant_context, meshcat, vessel_body, vessel_name,
-                 *, record_pose=None, complete_tilt=False):
+                 *, record_pose=None, complete_tilt=False, fill_fraction=DEFAULT_FILL_FRACTION,
+                 usable_capacity_ml=None):
     """Run all pouring phases; return motion success as before, not transfer success."""
     vessel_spec = VESSELS[vessel_name]
-    fluid = create_fluid_state(vessel_name, FILL_FRACTION)
+    fluid = create_fluid_state(vessel_name, fill_fraction, capacity_ml=usable_capacity_ml)
     max_tilt_deg = VESSEL_TILT_ANGLES.get(vessel_name, MAX_TILT_DEG)
     tilt_duration = VESSEL_TILT_DURATIONS.get(vessel_name, TILT_DURATION)
     return_duration = max(RETURN_DURATION, tilt_duration)
@@ -253,7 +253,7 @@ def execute_pour(simulator, station, station_context, plant, plant_context, mesh
     print(f'Desired mouth height: {mouth_z:.3f} m')
     print(f'Commanded tilt rotation: {max_tilt_deg:.1f} degrees')
     print(f'Tilt duration: {tilt_duration:.1f} s')
-    print(f'Initial fill fraction: {FILL_FRACTION:.0%}')
+    print(f'Initial fill fraction: {fill_fraction:.0%}')
     print(f'Initial liquid volume: {fluid.initial_volume_ml:.2f} mL')
     print(f'Vessel capacity: {fluid.capacity_ml:.2f} mL')
 
@@ -296,7 +296,7 @@ def execute_pour(simulator, station, station_context, plant, plant_context, mesh
             mouth = mouth_goal - np.array([.06 * smoothstep(s), 0., 0.])
             return vessel_pose_from_mouth(mouth, rotation, vessel_spec)
         # Aiming-only floor; actual release uses true fill, including zero.
-        aiming_fill = max(fluid.fill_fraction, .02) if DYNAMIC_AIMING else FILL_FRACTION
+        aiming_fill = max(fluid.fill_fraction, .02) if DYNAMIC_AIMING else fill_fraction
         return compute_aimed_vessel_pose(rotation, vessel_spec, mouth_z, aiming_fill)
     # Reduced-order emptying is independent of the SPH fill and free surface.
     if not run_motion(tilt_pose, tilt_duration, 'PHASE 8: Tilting vessel...',

@@ -73,7 +73,8 @@ def evaluate(
     Each run owns its output and scene. Pass the same scene_dir to reuse
     volume maps across serial runs. When output is omitted, a fresh temporary
     directory is created and its path is returned in the report.
-    settle_duration holds the source fixed before the requested replay duration.
+    settle_duration holds the first pose before replay. Profile fills and tilted
+    starts settle for 0.25 s by default.
     """
     from sph_drake_replay import DrakeReplay, prepare_animated_scene, replay_scene
 
@@ -89,7 +90,7 @@ def evaluate(
     _, initial_rotation = replay.pose(0)
     if settle_duration is None:
         tilted = not np.allclose(initial_rotation[:, 2], [0., 0., 1.], atol=1e-6)
-        settle_duration = 0.25 if tilted else 0.
+        settle_duration = 0.25 if tilted or config.fill_fraction is not None else 0.
     settle_duration = float(settle_duration)
     if not np.isfinite(settle_duration) or settle_duration < 0:
         raise ValueError("Settling duration must be finite and nonnegative")
@@ -133,6 +134,8 @@ def evaluate(
         "applied_source_pose_time_s": 0.0 if hold_source else pose_time,
         **classify(positions, origin, rotation, config=config),
     }
+    if config.fill_fraction is not None:
+        report["initial_fill"] = json.loads(scene.read_text())["initialFill"]
     (output / "spill_report.json").write_text(json.dumps(report, indent=2) + "\n")
     return report
 
@@ -157,7 +160,7 @@ def main():
     parser.add_argument("--duration", type=float, help="Default is the trajectory end time")
     parser.add_argument(
         "--settle-duration", type=float, metavar="SECONDS",
-        help="Hold source fixed before replay (default: 0.25 s for a tilted start, otherwise zero)",
+        help="Hold source fixed before replay (default: 0.25 s for profile fills or tilted starts)",
     )
     parser.add_argument("--hold-source", action="store_true", help="Run a fixed-vessel control")
     export = parser.add_mutually_exclusive_group()

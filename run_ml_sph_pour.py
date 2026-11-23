@@ -11,6 +11,7 @@ from tempfile import TemporaryDirectory
 
 import numpy as np
 
+from fluid_model import DEFAULT_FILL_FRACTION
 from prepare_sph_pouring import VesselProfile
 
 ROOT = Path(__file__).resolve().parent
@@ -147,15 +148,10 @@ def run_drake(args, output, hollow, geometry, models_dir):
     station.GRIP_FORCE_LIMITS[name] = 60.
     pour_planner.VESSEL_TILT_ANGLES[name] = 95.
     pour_planner.VESSEL_TILT_DURATIONS[name] = 10.
-    # The reduced-order planner requires capacity. Use the same hollow profile
-    # as the SPH geometry, integrating each frustum analytically.
-    volume = sum(np.pi * (z1-z0) * (r0*r0 + r0*r1 + r1*r1) / 3
-                 for (z0, r0), (z1, r1) in zip(hollow.inner, hollow.inner[1:]))
-    fluid_model.VESSEL_CAPACITIES_ML[name] = volume * 1e6
     fluid_model.EFFECTIVE_AREA_FRACTIONS[name] = .05
     drake_output = output / "drake"
     capture = StationSphExport(drake_output, ROOT / "models", name, source_profile=hollow,
-                               source_models_dir=models_dir, metadata=geometry)
+                               source_models_dir=models_dir, metadata=geometry, fill_fraction=args.fill_fraction)
     station.main(["--vessel", name, "--export-dir", str(drake_output), "--export-partial"],
                  capture=capture, source_xy=(args.source_x, args.source_y))
     return capture
@@ -173,6 +169,7 @@ def main():
     parser.add_argument("--floor", type=float, default=.004)
     parser.add_argument("--grasp-mode", choices=("manual", "ml"), required=True)
     parser.add_argument("--grasp-height", type=float)
+    parser.add_argument("--fill-fraction", type=float, default=DEFAULT_FILL_FRACTION)
     parser.add_argument("--source-x", type=float, default=.508)
     parser.add_argument("--source-y", type=float, default=-.047)
     parser.add_argument("--output", type=Path, required=True)
@@ -182,6 +179,8 @@ def main():
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--drake-only", action="store_true")
     args = parser.parse_args()
+    if not 0 < args.fill_fraction <= 1:
+        parser.error("--fill-fraction must be greater than zero and at most one")
     if args.grasp_height is not None and args.grasp_mode != "manual":
         parser.error("--grasp-height requires manual mode")
     output = args.output.resolve()

@@ -30,6 +30,8 @@ import numpy as np
 # simplified vessel geometries, not measured
 # capacities from real laboratory glassware.
 
+DEFAULT_FILL_FRACTION = .75
+
 VESSEL_CAPACITIES_ML = {
     "test_tube": 35.0,
     "erlenmeyer": 350.0,
@@ -296,15 +298,17 @@ class FluidState:
 
 def create_fluid_state(
     vessel_name,
-    initial_fill_fraction=0.75,
+    initial_fill_fraction=DEFAULT_FILL_FRACTION,
+    *,
+    capacity_ml=None,
 ):
     """Create a new fluid state for one pouring run."""
 
-    if vessel_name not in VESSEL_CAPACITIES_ML:
-
-        raise ValueError(
-            f"Unknown vessel: {vessel_name}"
-        )
+    if capacity_ml is None:
+        try:
+            capacity_ml = VESSEL_CAPACITIES_ML[vessel_name]
+        except KeyError as exc:
+            raise ValueError(f"Unknown vessel: {vessel_name}") from exc
 
     if not (
         0.0 < initial_fill_fraction <= 1.0
@@ -314,10 +318,6 @@ def create_fluid_state(
             "Initial fill fraction must be "
             "greater than zero and at most one."
         )
-
-    capacity_ml = (
-        VESSEL_CAPACITIES_ML[vessel_name]
-    )
 
     initial_volume_ml = (
         initial_fill_fraction
@@ -480,7 +480,7 @@ def test_fluid_model():
 
     fluid = create_fluid_state(
         "test_tube",
-        initial_fill_fraction=0.75,
+        initial_fill_fraction=DEFAULT_FILL_FRACTION,
     )
 
     # Release 10 mL into the receiver.
