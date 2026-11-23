@@ -114,6 +114,42 @@ The default generated cylinder with the ML-selected 0.09 m grasp completed a 58 
 
 The saved `shared_trajectories/shasha/source_trajectory.csv` has a valid tilted first pose but no confirmed matching geometry snapshot. The backup contains multiple plausible vessels. Use the external CSV command with a `cups.json` from the verified source profile and receiver setup if that pairing is recovered. Outside-both counts include particles still in flight at the endpoint and remain provisional.
 
+### Paired ML versus fixed-height transfer benchmark
+
+Run ten paired trials with the same generated vessel and fill for both grasp strategies. The benchmark samples from the pinned shape families using seed `84211` by default. It uses the upstream training ranges for height (0.14–0.16 m), mass (0.05–0.07 kg), and radius scale (0.94–1.06), and samples the source position within the rectangle between the two upstream positions. By default it samples 25–65% fill and uses 3.5 mm particles. It resamples candidates that cannot fit the requested fill at the selected spacing or are too short for the fixed grasp. The fixed-height baseline defaults to 0.09 m.
+
+```bash
+cd ~/pouring-bot
+git fetch origin shasha/ml-grasp-dataset
+export PYTHONPATH="$PWD/.venv/splishsplash/build/lib"
+export OMP_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+bench=sph_pouring_trial/grasp_transfer_10
+.venv/bin/python benchmark_grasp_transfer.py --trials 10 --seed 84211 \
+  --fixed-grasp-height 0.09 --particle-spacing 0.0035 \
+  --fill-fraction-min 0.25 --fill-fraction-max 0.65 --output "$bench"
+```
+
+Resume with the same output directory. Completed methods and completed Drake stages are reused. Incomplete attempts remain on disk, and each new attempt gets its own folder. Repeating an explicit option on resume requires it to match the saved settings.
+
+```bash
+.venv/bin/python benchmark_grasp_transfer.py --output "$bench" --resume
+```
+
+A lower-resolution one-pair smoke benchmark uses the same scoring horizon.
+
+```bash
+.venv/bin/python benchmark_grasp_transfer.py --trials 1 --seed 84212 \
+  --particle-spacing 0.006 --fill-fraction-min 0.12 --fill-fraction-max 0.18 \
+  --output sph_pouring_trial/grasp_transfer_smoke
+```
+
+Both Drake attempts run before SPH for each pair. To pass, a method must complete pickup and the active pour, and the recorded pose at the end of the pour must be tilted at least 60° with its mouth within 75 mm and its axis within 28° of the commanded pose. Recovery starts after the scoring endpoint, so an abort during recovery is recorded separately from active-pour success. An unsuccessful Drake attempt scores zero and skips SPH. Successful attempts replay serially and headlessly using the saved fill and automatic stationary start selection, including its full-replay fallback. The evaluator holds the final active-pour pose fixed for another second of fluid simulation before scoring, with Drake time held at the recorded endpoint.
+
+The score is `100 * in_receiver / total_particles`. Particle volumes are uniform within a run, and only centers inside the receiver contribute. Particles still in flight count outside both vessels. The endpoint score is provisional and resolution-dependent. The mean, median, and population standard deviation include zeros for methods that failed in Drake or SPH. SPH success rates describe completed solver evaluations, reported both across all completed methods and conditional on Drake success. Paired differences are ML minus manual in percentage points.
+
+`trials.csv` contains one row per method in each pair. `summary.json` contains aggregate and paired statistics. `trials.json` stores seeds, sampled geometry, stage checkpoints, errors, and paths relative to the output directory. Each pair has a shared profile snapshot and separate `ml` and `manual` directories containing Drake trajectories, logs, and SPH reports where available.
+
 ### Match the planner’s initial fill in WSL
 
 Use the existing patched SPH build and cache. Generated runs default to 75% fill. This example runs the goblet’s manual grasp and checks its SPH startup.

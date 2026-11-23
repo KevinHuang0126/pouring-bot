@@ -82,16 +82,20 @@ def select_grasp(training, trainer, collector, transfer, geometry, profile, com)
     return float(chosen["grasp_height_m"])
 
 
-def generate(args, output, upstream):
+def load_shape_modules(upstream):
     modules = ("generate_shape_families", "collect_shape_grasp_dataset", "train_shape_grasp_model",
                "test_novel_shape_transfer")
     for module in modules:
         (upstream / f"{module}.py").write_bytes(upstream_file(f"{module}.py"))
     sys.path.insert(0, str(upstream))
     try:
-        generator, collector, trainer, transfer = map(import_module, modules)
+        return tuple(map(import_module, modules))
     finally:
         sys.path.remove(str(upstream))
+
+
+def generate(args, output, upstream):
+    generator, collector, trainer, transfer = load_shape_modules(upstream)
     profiles = {**generator.PROFILES, **transfer.NOVEL_PROFILES}
     if args.profile_json:
         snapshot = json.loads(args.profile_json.read_text())

@@ -99,6 +99,7 @@ class StationSphExport:
             models_dir, self.output, "beaker", 0.003, 0.004,
         )
         self.recorder = TrajectoryRecorder()
+        self.pour_end = None
 
     def start(self, simulator, plant, plant_context, source_body, receiver_body):
         self.simulator = simulator
@@ -144,6 +145,14 @@ class StationSphExport:
         pose = self.plant.EvalBodyPoseInWorld(self.plant_context, self.source_body)
         self.recorder.record(time, "source", pose)
 
+    def record_pour_end(self, target_mouth, target_axis):
+        """Mark the final active-pour sample before recovery begins."""
+        self.pour_end = {
+            "drake_time_s": self.recorder.rows[-1][0],
+            "target_mouth_xyz_m": target_mouth.tolist(),
+            "target_axis_world": target_axis.tolist(),
+        }
+
     def save(self, *, motion_completed=None, pickup_success=None):
         trajectory = self.recorder.save(self.output / "source_trajectory.csv")
         (self.output / "cups.json").write_text(json.dumps(asdict(self.config), indent=2) + "\n")
@@ -151,6 +160,7 @@ class StationSphExport:
             status = {
                 "motion_completed": motion_completed,
                 "pickup_success": pickup_success,
+                "pour_end": self.pour_end,
                 "trajectory_replayable": len(self.recorder.rows) >= 2,
             }
             if self.initial_fill is not None:

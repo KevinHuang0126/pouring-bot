@@ -89,7 +89,8 @@ def test_pause_threshold_can_be_configured():
     assert not selection.checks["stationary_duration_s"]["passed"]
 
 
-def test_native_stationary_restart_pose_clocks_and_particle_accounting(tmp_path, monkeypatch):
+@pytest.mark.parametrize("final_hold", [0., .4])
+def test_native_stationary_restart_pose_clocks_and_particle_accounting(tmp_path, monkeypatch, final_hold):
     pytest.importorskip("pysplishsplash")
     from sph_drake_replay import DrakeReplay, prepare_animated_scene
     from visualize_pour import load_frames, source_poses
@@ -125,9 +126,9 @@ def test_native_stationary_restart_pose_clocks_and_particle_accounting(tmp_path,
 
     monkeypatch.setattr(DrakeReplay, "apply", track_pose)
     output = tmp_path / "sph"
-    duration = 2.3
-    report = evaluate(trajectory, output=output, duration=duration, config=config, export_fps=6.,
-                      sph_start_time="auto")
+    endpoint = origin + 4.4
+    report = evaluate(trajectory, output=output, end_drake_time=endpoint, config=config,
+                      export_fps=6., sph_start_time="auto", final_hold_duration=final_hold)
     start = report["sph_start"]
     assert start["method"] == "stationary-pose restart"
     assert start["initial_zero_fluid_velocity_assumption_used"]
@@ -150,8 +151,16 @@ def test_native_stationary_restart_pose_clocks_and_particle_accounting(tmp_path,
     np.testing.assert_allclose(clocks[clocks[:, 0] < dwell, 1], elapsed)
     assert (clocks[:, 1] == elapsed).sum() >= 3
     assert clocks[-1, 2] > start["onset_drake_time_s"]
-    assert report["applied_drake_time_s"] == pytest.approx(origin + elapsed + duration, abs=.005)
-    assert report["simulation_time_s"] == pytest.approx(dwell + duration, abs=.010)
+    assert report["requested_end_drake_time_s"] == pytest.approx(endpoint)
+    assert report["applied_drake_time_s"] == pytest.approx(endpoint, abs=.005)
+    assert report["simulation_time_s"] == pytest.approx(
+        dwell + endpoint - origin - elapsed + final_hold, abs=.015,
+    )
+    if final_hold:
+        assert report["applied_drake_time_s"] == pytest.approx(endpoint, abs=1e-8)
+        at_endpoint = np.isclose(clocks[:, 2], endpoint, atol=1e-8, rtol=0)
+        assert at_endpoint.sum() >= 2 and at_endpoint[-1]
+        assert calls[-1][:2] == (pytest.approx(endpoint - origin), True)
     assert 0 <= report["simulation_time_s"] - clocks[-1, 0] <= 1 / 6
 
     frames = load_frames(output, 6.)

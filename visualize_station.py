@@ -1649,6 +1649,7 @@ def main(argv=None, *, capture=None, source_xy=None):
                 vessel_body=vessel_body,
                 vessel_name=vessel_name,
                 record_pose=record_pose,
+                record_pour_end=capture.record_pour_end if capture else None,
                 complete_tilt=exporting,
                 fill_fraction=(capture.config.fill_fraction if capture and capture.initial_fill
                                else args.fill_fraction or DEFAULT_FILL_FRACTION),

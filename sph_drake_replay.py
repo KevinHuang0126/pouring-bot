@@ -204,7 +204,8 @@ class StepDiagnostics:
 
 
 def replay_scene(scene_path, replay, duration, output, *, settle_duration=0.0, on_step=None,
-                 diagnostics=False, diagnostic_receiver=None, headless=False, start_time=0.):
+                 diagnostics=False, diagnostic_receiver=None, headless=False, start_time=0.,
+                 final_hold_duration=0.):
     """Return solver time, last applied trajectory time, and all fluid centers.
 
     The optional step callback receives the simulation and the start and
@@ -212,6 +213,8 @@ def replay_scene(scene_path, replay, duration, output, *, settle_duration=0.0, o
     """
     if not np.isfinite(settle_duration) or settle_duration < 0:
         raise ValueError("Settling duration must be finite and nonnegative")
+    if not np.isfinite(final_hold_duration) or final_hold_duration < 0:
+        raise ValueError("Final hold duration must be finite and nonnegative")
     trace = StepDiagnostics(Path(output) / "step_diagnostics.csv") if diagnostics else None
     clock_start = perf_counter()
     scene = json.loads(Path(scene_path).read_text())
@@ -278,6 +281,7 @@ def replay_scene(scene_path, replay, duration, output, *, settle_duration=0.0, o
         boundary_seconds = solver_seconds = frame_tracking_seconds = diagnostics_seconds = 0.
         trajectory_start = None if settle_duration else initial_time
         pose_time = start_time
+        final_hold_start = None
         step_count = 0
         next_sample = 0.
         samples = []
@@ -299,12 +303,20 @@ def replay_scene(scene_path, replay, duration, output, *, settle_duration=0.0, o
                 print(f"Starting Drake replay at solver t={step_start:.6f} s", flush=True)
             settling = trajectory_start is None
             trajectory_time = 0.0 if settling else step_start - trajectory_start
-            if not settling and trajectory_time >= duration:
-                break
-            pose_time = start_time if replay.hold_source else start_time + trajectory_time
             started = perf_counter()
-            if step_count == 0 or not (settling or replay.hold_source):
-                replay.apply(source, pose_time, stationary=settling, update_mesh=not headless)
+            if not settling and trajectory_time >= duration:
+                if not final_hold_duration:
+                    break
+                if final_hold_start is None:
+                    final_hold_start = step_start
+                    pose_time = start_time if replay.hold_source else start_time + duration
+                    replay.apply(source, pose_time, stationary=True, update_mesh=not headless)
+                if step_start - final_hold_start >= final_hold_duration:
+                    break
+            else:
+                pose_time = start_time if replay.hold_source else start_time + trajectory_time
+                if step_count == 0 or not (settling or replay.hold_source):
+                    replay.apply(source, pose_time, stationary=settling, update_mesh=not headless)
             boundary_seconds += perf_counter() - started
             # The solver samples the maps at the updated pose and uses the
             # rigid body's point velocities. step() alone only exports frames.

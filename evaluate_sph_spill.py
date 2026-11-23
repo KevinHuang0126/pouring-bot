@@ -73,6 +73,8 @@ def evaluate(
     sph_prepour_seconds: float = 2.,
     particle_spacing: float | None = None,
     restart_thresholds: RestartThresholds = RestartThresholds(),
+    end_drake_time: float | None = None,
+    final_hold_duration: float = 0.,
 ) -> dict:
     """Replay a CSV or an in-memory Drake recorder and return the JSON report.
 
@@ -135,7 +137,14 @@ def evaluate(
         "fallback_reason": selection.fallback_reason,
     }
     available = replay.times[-1] - start
+    if end_drake_time is not None:
+        if duration is not None:
+            raise ValueError("Specify either duration or an end Drake timestamp")
+        duration = float(end_drake_time) - time_origin - start
     duration = float(available if duration is None else duration)
+    final_hold_duration = float(final_hold_duration)
+    if not np.isfinite(final_hold_duration) or final_hold_duration < 0:
+        raise ValueError("Final hold duration must be finite and nonnegative")
     if not np.isfinite(duration) or not 0 < duration <= available:
         raise ValueError("Duration must be positive and within the exported trajectory")
 
@@ -170,6 +179,8 @@ def evaluate(
     options = {"headless": True} if export_fps == 0 else {}
     if start:
         options["start_time"] = start
+    if final_hold_duration:
+        options["final_hold_duration"] = final_hold_duration
     if diagnostics:
         receiver = config.receiver_profile or cylindrical_profile(config.receiver_cup)
         receiver_rotation = config.receiver_rotation().as_matrix()
@@ -189,6 +200,8 @@ def evaluate(
         "output_dir": str(output),
         "requested_duration_s": duration,
         "requested_settle_duration_s": settle_duration,
+        "requested_final_hold_duration_s": final_hold_duration,
+        "requested_end_drake_time_s": time_origin + start + duration,
         "simulation_time_s": time,
         "input_time_origin_s": replay.input_time_origin_s,
         "sph_start": start_info,
@@ -241,7 +254,11 @@ def main():
         "--template", type=Path,
         default=DEFAULT_TEMPLATE,
     )
-    parser.add_argument("--duration", type=float, help="Replay seconds after settling (default: through the end of the trajectory)")
+    horizon = parser.add_mutually_exclusive_group()
+    horizon.add_argument("--duration", type=float, help="Replay seconds after settling")
+    horizon.add_argument("--end-drake-time", type=float, help="Stop replay at this original CSV timestamp")
+    parser.add_argument("--final-hold-duration", type=float, default=0.,
+                        help="Hold the last replay pose fixed for this many solver seconds")
     add_replay_start_arguments(parser)
     parser.add_argument("--hold-source", action="store_true", help="Run a fixed-vessel control")
     export = parser.add_mutually_exclusive_group()
@@ -270,6 +287,7 @@ def main():
             sph_start_time=args.sph_start_time, sph_prepour_seconds=args.sph_prepour_seconds,
             particle_spacing=args.particle_spacing,
             restart_thresholds=read_restart_thresholds(args.sph_restart_thresholds),
+            end_drake_time=args.end_drake_time, final_hold_duration=args.final_hold_duration,
         )
     except (ValueError, TypeError, OSError) as exc:
         parser.error(str(exc))

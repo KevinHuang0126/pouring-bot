@@ -230,7 +230,7 @@ def command_cartesian_motion(simulator, station, station_context, plant, plant_c
 
 def execute_pour(simulator, station, station_context, plant, plant_context, meshcat, vessel_body, vessel_name,
                  *, record_pose=None, complete_tilt=False, fill_fraction=DEFAULT_FILL_FRACTION,
-                 usable_capacity_ml=None):
+                 usable_capacity_ml=None, record_pour_end=None):
     """Run all pouring phases; return motion success as before, not transfer success."""
     vessel_spec = VESSELS[vessel_name]
     fluid = create_fluid_state(vessel_name, fill_fraction, capacity_ml=usable_capacity_ml)
@@ -312,6 +312,10 @@ def execute_pour(simulator, station, station_context, plant, plant_context, mesh
             return False
     else:
         print('PHASE 9: Skipped - source already empty.')
+    if record_pour_end is not None:
+        target = tilt_pose(1.)
+        mouth = target.multiply(np.array([0., 0., vessel_spec.height]))
+        record_pour_end(mouth, target.rotation().matrix()[:, 2])
     print(f'Remaining: {fluid.remaining_volume_ml:.2f} mL | Collected: {fluid.collected_volume_ml:.2f} mL | Spilled: {fluid.spilled_volume_ml:.2f} mL')
 
     if fluid.is_empty:
