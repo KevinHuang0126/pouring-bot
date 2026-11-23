@@ -65,6 +65,8 @@ def evaluate(
     settle_duration: float = 0.0,
     config: PouringConfig = DEFAULT_CONFIG,
     diagnostics: bool = False,
+    export_fps: float = 30.,
+    cfl_factor: float | None = None,
 ) -> dict:
     """Replay a CSV or an in-memory Drake recorder and return the JSON report.
 
@@ -97,7 +99,8 @@ def evaluate(
     if not np.isfinite(duration) or not 0 < duration <= replay.times[-1]:
         raise ValueError("Duration must be positive and within the exported trajectory")
 
-    scene = prepare_scene(trajectory, scene_path, template, settings=config)
+    scene = prepare_scene(trajectory, scene_path, template, settings=config,
+                          export_fps=export_fps, cfl_factor=cfl_factor)
     animated_scene = scene_path / "scene_animated.json"
     prepare_animated_scene(scene, animated_scene)
     if scene_dir is not None and Path(scene_dir).resolve() != scene_path:
@@ -106,11 +109,10 @@ def evaluate(
         (scene_path / "Cache").symlink_to(cache, target_is_directory=True)
 
     # The native simulator owns process-global state.
-    options = {}
+    options = {"headless": True} if export_fps == 0 else {}
     if diagnostics:
         receiver = config.receiver_profile or cylindrical_profile(config.receiver_cup)
-        options = {"diagnostics": True,
-                   "diagnostic_receiver": (config.receiver_origin, receiver.contains)}
+        options.update(diagnostics=True, diagnostic_receiver=(config.receiver_origin, receiver.contains))
     with _REPLAY_LOCK:
         time, pose_time, positions = replay_scene(
             animated_scene, replay, duration, output, settle_duration=settle_duration, **options,
@@ -156,6 +158,10 @@ def main():
         help="Hold the source fixed before replaying the full requested duration",
     )
     parser.add_argument("--hold-source", action="store_true", help="Run a fixed-vessel control")
+    export = parser.add_mutually_exclusive_group()
+    export.add_argument("--export-fps", type=float, default=30., help="VTK frames per second")
+    export.add_argument("--headless", action="store_true", help="Skip VTK output and keep the spill report")
+    parser.add_argument("--cfl-factor", type=float, help="Override the template CFL factor")
     parser.add_argument("--diagnostics", action="store_true", help="Write per-step particle diagnostics")
     parser.add_argument("--config", type=Path, help="JSON cup and fill overrides")
     args = parser.parse_args()
@@ -173,7 +179,8 @@ def main():
         report = evaluate(
             trajectory, args.output, args.scene_dir, args.template, args.duration,
             hold_source=args.hold_source, settle_duration=args.settle_duration, config=config,
-            diagnostics=args.diagnostics,
+            diagnostics=args.diagnostics, export_fps=0. if args.headless else args.export_fps,
+            cfl_factor=args.cfl_factor,
         )
     except (ValueError, TypeError, OSError) as exc:
         parser.error(str(exc))

@@ -1,0 +1,18 @@
+diff --git a/SPlisHSPlasH/Viscosity/Viscosity_Weiler2018.cpp b/SPlisHSPlasH/Viscosity/Viscosity_Weiler2018.cpp
+--- a/SPlisHSPlasH/Viscosity/Viscosity_Weiler2018.cpp
++++ b/SPlisHSPlasH/Viscosity/Viscosity_Weiler2018.cpp
+@@ -1245,10 +1245,10 @@ void Viscosity_Weiler2018::computeRHS(VectorXr &b, VectorXr &g)
+             b[3*i+1] = vi[1] - dt/density_i * bi[1];
+             b[3*i+2] = vi[2] - dt/density_i * bi[2];
+ 
+-            // Warmstart
+-            g[3 * i] = vi[0] + m_vDiff[i][0];
+-            g[3 * i + 1] = vi[1] + m_vDiff[i][1];
+-            g[3 * i + 2] = vi[2] + m_vDiff[i][2];
++            // The uncoupled row is identity. Starting at its RHS makes the
++            // residual exactly zero there, even when the global CG tolerance
++            // accepts the guess without iteration after the neighbors change.
++            g.segment<3>(3 * i) = b.segment<3>(3 * i);
+         }
+     }
+ }

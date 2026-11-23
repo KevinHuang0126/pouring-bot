@@ -102,6 +102,7 @@ class EvaluatorInterfaceTest(unittest.TestCase):
                 result = evaluate(
                     recorder, output=output, scene_dir=cache, config=config,
                     settle_duration=0.2, diagnostics=(name == "second"),
+                    export_fps=0. if name == "second" else 12., cfl_factor=.25,
                 )
                 self.assertEqual(result, json.loads((output / "spill_report.json").read_text()))
                 self.assertIs(result["spill_measurement_validated"], False)
@@ -110,6 +111,7 @@ class EvaluatorInterfaceTest(unittest.TestCase):
                 kwargs = binding.replay_scene.call_args.kwargs
                 if name == "second":
                     self.assertTrue(kwargs["diagnostics"])
+                    self.assertTrue(kwargs["headless"])
                     center, contains = kwargs["diagnostic_receiver"]
                     self.assertEqual(center, (0.2, 0.0, 0.0))
                     self.assertTrue(contains(np.array([[0, 0, .05]]))[0])
@@ -122,6 +124,10 @@ class EvaluatorInterfaceTest(unittest.TestCase):
                 scene = output / "scene"
                 self.assertEqual((scene / "Cache").resolve(), cache.resolve() / "Cache")
                 payload = json.loads((scene / "scene_static.json").read_text())
+                self.assertEqual(payload["Configuration"]["enableVTKExport"], name == "first")
+                self.assertEqual(payload["Configuration"]["cflFactor"], .25)
+                if name == "first":
+                    self.assertEqual(payload["Configuration"]["dataExportFPS"], 12.)
                 self.assertEqual(payload["RigidBodies"][1]["translation"], [0.2, 0, 0])
                 np.testing.assert_allclose(payload["FluidBlocks"][0]["end"], [0.02, 0.02, 0.22])
             self.assertEqual(binding.replay_scene.call_count, 2)

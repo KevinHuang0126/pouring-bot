@@ -174,7 +174,11 @@ def write_boundary(output, name, profile, dimensions, default):
     return path
 
 
-def prepare_scene(trajectory, output, template, *, settings=DEFAULT_CONFIG):
+def prepare_scene(trajectory, output, template, *, settings=DEFAULT_CONFIG, export_fps=30.0, cfl_factor=None):
+    if not math.isfinite(export_fps) or export_fps < 0:
+        raise ValueError("Export FPS must be finite and nonnegative")
+    if cfl_factor is not None and (not math.isfinite(cfl_factor) or cfl_factor <= 0):
+        raise ValueError("CFL factor must be positive and finite")
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     trajectory = Path(trajectory).resolve()
@@ -195,8 +199,10 @@ def prepare_scene(trajectory, output, template, *, settings=DEFAULT_CONFIG):
     config = template['Configuration']
     config.update({'particleRadius': settings.particle_radius, 'gravitation': [0,0,-9.81],
                    'boundaryHandlingMethod': 2,  # Bender2019 volume maps
-                   'enableVTKExport': True, 'dataExportFPS': 30.0,
+                   'enableVTKExport': export_fps > 0, 'dataExportFPS': export_fps or 30.0,
                    'particleAttributes': 'velocity;density'})
+    if cfl_factor is not None:
+        config['cflFactor'] = cfl_factor
     if settings.max_time_step is not None:
         config['timeStepSize'] = settings.max_time_step
         config['cflMaxTimeStepSize'] = settings.max_time_step

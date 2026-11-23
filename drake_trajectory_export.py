@@ -117,6 +117,11 @@ class PoseInterpolation:
         times = np.clip(times, self.times[0], self.times[-1])
         return self.translation(times), self.rotation(times).as_matrix()
 
+    def sample(self, time):
+        rotation = self.rotation(time)
+        return (self.translation(time), rotation.as_quat(), self.translation(time, 1),
+                rotation.apply(self.rotation(time, 1)))
+
     def velocity(self, time):
         rotation = self.rotation(time)
         return self.translation(time, 1), rotation.apply(self.rotation(time, 1))

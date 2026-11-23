@@ -17,7 +17,7 @@ sudo apt-get install -y git build-essential cmake pkg-config python3-dev python3
 bash scripts/setup_sph.sh
 ```
 
-Setup needs network access to GitHub and PyPI. The first setup builds SPlisHSPlasH from source and applies the repository’s DFSPH timestep patch. Rerun the setup script to update an existing demo environment. Set `PYTHON` to select a compatible interpreter or `BUILD_JOBS` to control compile parallelism. Drake downloads its pinned public robot models on first use.
+Setup needs network access to GitHub and PyPI. The first setup builds SPlisHSPlasH from source and applies the repository’s DFSPH timestep and implicit-viscosity initial-guess patches. Rerun the setup script to update an existing demo environment. Set `PYTHON` to select a compatible interpreter or `BUILD_JOBS` to control compile parallelism. Drake downloads its pinned public robot models on first use.
 
 ### Run and view the demo
 
@@ -75,6 +75,38 @@ PYTHONPATH="$PWD/.venv/splishsplash/build/lib" OMP_NUM_THREADS=1 \
 ```
 
 The controlled trajectory rotates the source around its mouth to 120° and holds it there. It bypasses robot grasping to isolate fluid outflow. The 3-second tube replay produced visible outflow and finished with 332 of 448 particles in the receiver, 116 outside both vessels, and zero in the source. These are provisional particle-center counts. `spill_report.json` marks spill measurement as unvalidated.
+
+### Fast ML evaluation and visual evaluation
+
+Rerun `bash scripts/setup_sph.sh` once to install the viscosity fix. Reuse the existing volume-map cache. For a new experiment, point `run_dir` at the directory exported by `visualize_station.py`.
+
+```bash
+export PYTHONPATH="$PWD/.venv/splishsplash/build/lib"
+export OMP_NUM_THREADS=1
+run_dir=sph_pouring_trial/test_tube_run_01
+.venv/bin/python evaluate_sph_spill.py --station-export "$run_dir" \
+  --scene-dir sph_pouring_trial/station_cache --headless \
+  --output sph_pouring_trial/fast_01
+
+.venv/bin/python evaluate_sph_spill.py --station-export "$run_dir" \
+  --scene-dir sph_pouring_trial/station_cache --export-fps 12 \
+  --output sph_pouring_trial/visual_01
+.venv/bin/python visualize_pour.py --fluid-output sph_pouring_trial/visual_01 --no-robot
+```
+
+Headless evaluation still writes the final spill report and `replay_timing.json`. In Python use `evaluate(trajectory, config=config, export_fps=0)` for the same path. The default is 30 fps. Use `--diagnostics` to collect per-step data when investigating a run. It adds work and is off by default.
+
+Use `--duration` to stop after a recorded interval if that scoring horizon is appropriate for the comparison. The full replay remains the default. There is no automatic start-time skip. The recorded tube is already tilted by about 17° before the final tilt, and its preceding grasp and transport determine the state of the fill. Starting there with a fresh box of particles would change the experiment.
+
+### Free-flight instability and runtime
+
+With the previous Weiler implicit-viscosity warm start, a particle could carry its last viscous velocity increment even after it had left all neighbors and boundary support. The linear-system row for an isolated particle is the identity. The old initial guess was the current velocity plus that stale increment. Once the global relative residual passed the convergence test, the solver could accept the guess and apply the increment again. In the robot trace the largest repeated nonpressure impulse reached 0.196 m/s per 0.099 ms step, outside both wall maps, at nearly the self-density of 318.31 kg/m³. The source was moving slowly at the event. The pressure solver remained at two iterations. A diagnostic isolated particle gained 0.20 m/s horizontally on each step with the old build and conserved horizontal velocity with the patched build. The patch initializes the same implicit system at its current right-hand side. It leaves viscosity, gravity, geometry, and particle count intact.
+
+See [the benchmark CSV](benchmarks/sph_replay.csv) and [the robot event CSV](benchmarks/sph_events.csv) for the recorded comparisons. The conservative default is CFL 0.125. Override it with `--cfl-factor` for experiments. On the 2.4 s controlled tilt with 448 particles, CFL 0.125, 0.25 and 0.5 required 12,453, 8,498 and 5,796 steps, respectively. Their largest single-step velocity changes were 0.54, 0.67 and 1.24 m/s. CFL 0.25 is a useful controlled-test setting. The larger 0.5 kicks make it a poor default. At CFL 0.25, headless and 12 fps produced identical final counts on the control. Replay measurement was 9.05 s headless and 9.70 s visual, with about 7 s in native stepping and 2 s in motion and boundary updates. The old full robot run spent 157 of its 288 native solver seconds on neighborhood search. More frame-rate reduction yields limited benefit while native stepping dominates.
+
+The corrected 62 s robot replay conserved 448 particles and finished with 229 in the receiver, 215 in the source, and four escaped. The high global peak of 223 m/s occurred below the scene during the long fall. Above world Z zero the peak was 2.95 m/s. The largest single-step change was 1.20 m/s and reduced the affected particle's kinetic energy from 62.7 to 22.2 μJ. Receiver count was already 229 at 47 s for this particular take. Use a shorter scoring horizon only when it represents the comparison you intend. Full headless validation with per-step tracing took 440 s, including 139 s spent sampling diagnostics. The approximate 301 s without sampling is a timing subtraction, with no second full run to measure it directly.
+
+The coarse check used `"particle_radius": 0.0018` in a copy of the control's cup config. It reduced the fill to 207 particles and shortened the solver portion, but changed collection from 434/448 to 145/207 at CFL 0.125. Keep 448 particles as the baseline for comparisons. The corrected receiver counts are still sensitive to solver settings and aim. Escaped particles remain in the simulation and accelerate under gravity because the scene has no ground. Counts are provisional.
 
 ### Diagnose receiver impact and particle speeds
 
@@ -161,7 +193,7 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) for the complete Git workflow and copyab
 
 ## Evaluator reference
 
-The reference environment used Python 3.14.4 and a Release build of SPlisHSPlasH 2.19.1 at commit `dba6b26b9387ab6bdd187d6df0a7c9d490d03500`, with single precision and CompactNSearch. If you build the bindings yourself, apply `patches/splishsplash-dfsph-timestep.patch` to the pinned source before compiling. Use the setup script for the tested build configuration.
+The reference environment used Python 3.14.4 and a Release build of SPlisHSPlasH 2.19.1 at commit `dba6b26b9387ab6bdd187d6df0a7c9d490d03500`, with single precision and CompactNSearch. If you build the bindings yourself, apply both patches from `scripts/setup_sph.sh` to the pinned source before compiling. Use the setup script for the tested build configuration.
 
 The checked-in CSV runs for 3 seconds. Use `--duration 0.03` for a quick run or `--hold-source` for a fixed-vessel control. Each run keeps its own scene, VTK frames, log, and `spill_report.json`. Use a new or empty output directory for each run. Reuse `--scene-dir` to share volume maps across serial runs with the same SPlisHSPlasH build. Use separate cache directories for parallel processes. The first run for a cup shape builds its map. Without `--scene-dir`, the maps live with the run's scene.
 

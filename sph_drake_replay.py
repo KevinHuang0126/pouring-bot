@@ -13,6 +13,7 @@ The Drake trajectory prescribes the source vessel pose and velocity.
 import argparse
 import csv
 import json
+from time import perf_counter
 from tempfile import NamedTemporaryFile
 from pathlib import Path
 
@@ -69,17 +70,22 @@ class DrakeReplay:
             return np.zeros(3), np.zeros(3)
         return self.interpolation.velocity(t)
 
-    def apply(self, boundary, t, *, stationary=False):
+    def apply(self, boundary, t, *, stationary=False, update_mesh=True):
         body = boundary.getRigidBodyObject()
-        p, R = self.pose(t)
-        v, omega = (np.zeros(3), np.zeros(3)) if stationary else self.velocity(t)
+        if stationary or self.hold_source:
+            p, R = self.pose(t)
+            q = Rotation.from_matrix(R).as_quat()
+            v = omega = np.zeros(3)
+        else:
+            p, q, v, omega = self.interpolation.sample(t)
 
         # The binding uses Eigen quaternion coefficient order (x, y, z, w).
         body.setPosition(p)
-        body.setRotation(Rotation.from_matrix(R).as_quat())
+        body.setRotation(q)
         body.setVelocity(v)
         body.setAngularVelocity(omega)
-        body.updateMeshTransformation()
+        if update_mesh:
+            body.updateMeshTransformation()
 
         # CFL takes the square root of the maximum velocity accumulator.
         speed_bound = np.linalg.norm(v) + boundary.getMaxDist() * np.linalg.norm(omega)
@@ -109,6 +115,7 @@ class StepDiagnostics:
         self.path = path
         self.previous = {}
         self.rows = []
+        self.previous_motion = None
 
     def sample(self, simulation, source_time, start, end, source, receiver):
         dt = end - start
@@ -124,12 +131,14 @@ class StepDiagnostics:
             model = simulation.getFluidModel(j)
             if not model.numActiveParticles():
                 continue
-            indices = range(model.numActiveParticles())
-            ids = [(j, model.getParticleId(i)) for i in indices]
-            p = np.array([model.getPosition(i) for i in indices])
-            v = np.array([model.getVelocity(i) for i in indices])
-            a = np.array([model.getAcceleration(i) for i in indices])
-            rho = np.array([model.getDensity(i) for i in indices])
+            n = model.numActiveParticles()
+            def field(name):
+                return np.asarray(model.getFieldBuffer(name))[:n]
+            # Sort by persistent ID before copying native buffers, which the
+            # next neighborhood search can reorder in place.
+            order = np.argsort(field("id"))
+            ids = field("id")[order]
+            p, v, rho = (field(name)[order] for name in ("position", "velocity", "density"))
             speeds = np.linalg.norm(v, axis=1)
             speed.extend(speeds)
             density.extend(rho)
@@ -137,20 +146,26 @@ class StepDiagnostics:
             if receiver is not None:
                 origin, contains = receiver
                 receiver_speed.extend(speeds[contains(p - origin)])
-            prior = np.array([self.previous.get(key, (pos - dt * vel, np.zeros(3)))
-                              for key, pos, vel in zip(ids, p, v)])
+            prior_ids, prior_p, prior_v = self.previous.get(j, (ids, p - dt * v, np.zeros_like(v)))
+            if not np.array_equal(ids, prior_ids):
+                raise RuntimeError("Diagnostics require constant particle IDs")
+            prior = np.stack((prior_p, prior_v), axis=1)
             changes = np.linalg.norm(v - prior[:, 1], axis=1)
             projection = np.linalg.norm(p - prior[:, 0] - dt * v, axis=1)
             max_projection = max(max_projection, float(projection.max()))
             k = int(changes.argmax())
             if changes[k] > strongest[0]:
-                impact = (model, j, k, prior[k, 0])
+                i = int(order[k])
+                impulse = dt * model.getAcceleration(i)
+                impact = (model, j, i, prior[k, 0])
+                mass = model.getMass(i)
                 strongest = (
-                    changes[k], ids[k][1], np.linalg.norm(dt * a[k]),
-                    np.linalg.norm(v[k] - prior[k, 1] - dt * a[k]),
-                    rho[k], projection[k], *p[k],
+                    changes[k], ids[k], np.linalg.norm(impulse),
+                    np.linalg.norm(v[k] - prior[k, 1] - impulse),
+                    rho[k], projection[k], *p[k], *prior_v[k], *v[k],
+                    .5 * mass * np.dot(prior_v[k], prior_v[k]), .5 * mass * np.dot(v[k], v[k]),
                 )
-            snapshots.update(zip(ids, zip(p, v)))
+            snapshots[j] = ids, p, v
         self.previous = snapshots
         if impact is None:
             raise RuntimeError("No active fluid particles to diagnose")
@@ -171,12 +186,17 @@ class StepDiagnostics:
             contribution = model.getDensity0() * volume * simulation.W(prior_position - sample)
             wall_samples[label] = (distance, contribution)
         body = source.getRigidBodyObject()
+        motion = np.r_[body.getVelocity(), body.getAngularVelocity()]
+        previous_time, previous_motion = self.previous_motion or (start - dt, motion)
+        acceleration = (motion - previous_motion) / (start - previous_time)
+        self.previous_motion = start, motion
+        solver = simulation.getTimeStep()
         self.rows.append((
             start, end, source_time, len(speed), *np.percentile(speed, [50, 95, 99]),
             max(speed), max(workspace_speed, default=0.), len(receiver_speed), max(receiver_speed, default=0.),
             max(density), *strongest, max_projection,
             *wall_samples["source"], *wall_samples["receiver"],
-            *body.getVelocity(), *body.getAngularVelocity(),
+            *motion, *acceleration, solver.getNumIterations(),
         ))
 
     def save(self):
@@ -190,17 +210,22 @@ class StepDiagnostics:
                 "max_delta_v_m_s", "max_delta_v_particle_id", "nonpressure_delta_v_m_s",
                 "residual_delta_v_m_s", "max_delta_v_density_kg_m3",
                 "max_delta_v_position_correction_m", "max_delta_v_x_m", "max_delta_v_y_m",
-                "max_delta_v_z_m", "max_position_correction_m",
+                "max_delta_v_z_m", "particle_vx_before", "particle_vy_before", "particle_vz_before",
+                "particle_vx_after", "particle_vy_after", "particle_vz_after",
+                "particle_ke_before_j", "particle_ke_after_j", "max_position_correction_m",
                 "source_sdf_m", "source_boundary_density_kg_m3",
                 "receiver_sdf_m", "receiver_boundary_density_kg_m3",
                 "source_vx_m_s", "source_vy_m_s", "source_vz_m_s",
                 "source_wx_rad_s", "source_wy_rad_s", "source_wz_rad_s",
+                "source_ax_m_s2", "source_ay_m_s2", "source_az_m_s2",
+                "source_alphax_rad_s2", "source_alphay_rad_s2", "source_alphaz_rad_s2",
+                "pressure_iterations",
             ))
             writer.writerows(self.rows)
 
 
 def replay_scene(scene_path, replay, duration, output, *, settle_duration=0.0, on_step=None,
-                 diagnostics=False, diagnostic_receiver=None):
+                 diagnostics=False, diagnostic_receiver=None, headless=False):
     """Return solver time, last applied trajectory time, and all fluid centers.
 
     The optional step callback receives the simulation and the start and
@@ -209,6 +234,9 @@ def replay_scene(scene_path, replay, duration, output, *, settle_duration=0.0, o
     if not np.isfinite(settle_duration) or settle_duration < 0:
         raise ValueError("Settling duration must be finite and nonnegative")
     trace = StepDiagnostics(Path(output) / "step_diagnostics.csv") if diagnostics else None
+    clock_start = perf_counter()
+    parameters = json.loads(Path(scene_path).read_text())["Configuration"]
+    vtk_enabled = not headless and parameters.get("enableVTKExport", True)
     simulator = sph.Exec.SimulatorBase()
     simulator.init(
         sceneFile=str(scene_path), outputDir=str(output),
@@ -248,6 +276,10 @@ def replay_scene(scene_path, replay, duration, output, *, settle_duration=0.0, o
         offsets = np.asarray(body.getVertices()) - body.getPosition()
         source.setMaxDist(np.linalg.norm(offsets, axis=1).max())
 
+        init_seconds = perf_counter() - clock_start
+        solver = simulation.getTimeStep()
+        minimum_dt = np.inf
+        boundary_seconds = solver_seconds = frame_tracking_seconds = diagnostics_seconds = 0.
         trajectory_start = None if settle_duration else initial_time
         pose_time = 0.0
         step_count = 0
@@ -272,24 +304,41 @@ def replay_scene(scene_path, replay, duration, output, *, settle_duration=0.0, o
             if not settling and trajectory_time >= duration:
                 break
             pose_time = trajectory_time
-            replay.apply(source, pose_time, stationary=settling)
+            started = perf_counter()
+            if step_count == 0 or not (settling or replay.hold_source):
+                replay.apply(source, pose_time, stationary=settling, update_mesh=not headless)
+            boundary_seconds += perf_counter() - started
             # The solver samples the maps at the updated pose and uses the
             # rigid body's point velocities. step() alone only exports frames.
-            if not simulator.timeStepNoGUI():
-                raise RuntimeError("SPH stopped before the requested duration")
+            started = perf_counter()
+            if not headless:
+                if not simulator.timeStepNoGUI():
+                    raise RuntimeError("SPH stopped before the requested duration")
+            else:
+                # For prescribed volume maps, apply() supplies the pose and
+                # CFL velocity bound. No exporter or native boundary update
+                # is needed after the step.
+                solver.step()
+            solver_seconds += perf_counter() - started
             current_time = tm.getTime()
             if not np.isfinite(current_time) or current_time <= step_start:
                 raise RuntimeError("SPH simulation time stopped advancing")
             step_count += 1
             # VTK has no timestamp. Record the step that produced each frame
             # and the vessel pose sampled by that step.
-            frame = len(fluid_frames) + 1
-            vtk_path = vtk_output / f"ParticleData_Fluid_{frame}.vtk"
-            if (vtk_path.is_file()
-                    and vtk_path.stat().st_mtime_ns != previous_frames.get(vtk_path.name)):
-                fluid_frames.append((frame, current_time, pose_time))
+            minimum_dt = min(minimum_dt, current_time - step_start)
+            if vtk_enabled:
+                started = perf_counter()
+                frame = len(fluid_frames) + 1
+                vtk_path = vtk_output / f"ParticleData_Fluid_{frame}.vtk"
+                if (vtk_path.is_file()
+                        and vtk_path.stat().st_mtime_ns != previous_frames.get(vtk_path.name)):
+                    fluid_frames.append((frame, current_time, pose_time))
+                frame_tracking_seconds += perf_counter() - started
             if trace is not None:
+                started = perf_counter()
                 trace.sample(simulation, pose_time, step_start, current_time, source, diagnostic_receiver)
+                diagnostics_seconds += perf_counter() - started
             if on_step is not None:
                 on_step(simulation, step_start, current_time)
             if step_count % 100 == 0:
@@ -309,6 +358,21 @@ def replay_scene(scene_path, replay, duration, output, *, settle_duration=0.0, o
                           for j in range(simulation.numberOfFluidModels()))
             for i in range(model.numActiveParticles())
         ]).reshape(-1, 3)
+        simulated = tm.getTime() - initial_time
+        metrics = {
+            "wall_s": perf_counter() - clock_start,
+            "initialization_s": init_seconds,
+            "simulated_s": simulated,
+            "steps": step_count,
+            "average_dt_s": simulated / step_count,
+            "minimum_dt_s": minimum_dt,
+            "boundary_and_interpolation_s": boundary_seconds,
+            "solver_and_native_export_s": solver_seconds,
+            "frame_tracking_s": frame_tracking_seconds,
+            "diagnostics_s": diagnostics_seconds,
+            "vtk_frames": len(fluid_frames),
+        }
+        (output / "replay_timing.json").write_text(json.dumps(metrics, indent=2) + "\n")
         return tm.getTime(), pose_time, positions
     finally:
         simulator.cleanup()
